@@ -479,7 +479,7 @@ async function send(){
   }catch(err){
     loader.querySelector(".bubble").innerHTML =
       '<div class="error-note"><b>Couldn\'t reach Lumina.</b> ' +
-      'The key hardcoded in app.js may be missing, invalid, or rate-limited. Check the console for details, or update the _K_ENCODED constant in app.js.<br><small>' +
+      'The /api/chat proxy didn\'t respond correctly — check that api/chat.js is at your project root (not nested in a subfolder) and that GROQ_API_KEY is set in Vercel → Settings → Environment Variables, then redeploy.<br><small>' +
       String(err.message).replace(/</g,"&lt;") + "</small></div>";
   }finally{
     busy = false; sendBtn.disabled = false;
