@@ -59,6 +59,12 @@
 
   :focus-visible{outline:2px solid var(--emerald);outline-offset:2px;border-radius:6px}
 
+  /* The [hidden] attribute must always win over component display rules
+     (e.g. .auth-form{display:flex}) regardless of CSS source order —
+     otherwise a "hidden" element can still render (this is what caused
+     the Sign Up form to show underneath Log In instead of replacing it). */
+  [hidden]{display:none !important}
+
   /* ---------- Header ---------- */
   header{
     background:linear-gradient(180deg, rgba(22,28,46,.92), rgba(22,28,46,.78));

@@ -1,53 +1,87 @@
-# Lumina AI — Login System Setup
+# Lumina AI — Login System Setup (MongoDB)
 
 This adds real accounts (email + password) with sessions that persist
-across visits, backed by a free Supabase Postgres database. Follow
-these steps once, then every deploy just works.
+across visits, plus cross-device chat history — all backed by a free
+MongoDB Atlas database. Follow these steps once, then every deploy
+just works.
 
-## 1. Create a Supabase project
+## 1. Create a free MongoDB Atlas cluster
 
-1. Go to https://supabase.com → sign up / log in → **New project**.
-2. Pick any name/region, set a database password (you won't need it directly).
-3. Wait ~1 minute for it to finish provisioning.
+1. Go to https://www.mongodb.com/cloud/atlas/register → sign up (free).
+2. Click **Build a Database** → choose the **M0 Free** tier → pick any
+   cloud provider/region → **Create**.
+3. Wait ~1–3 minutes for the cluster to finish provisioning.
 
-## 2. Create the tables
+## 2. Create a database user
 
-1. In your Supabase project, open **SQL Editor** → **New query**.
-2. Paste the entire contents of [`sql/schema.sql`](./sql/schema.sql) from this
-   project and click **Run**.
-3. You should now see three tables under **Table Editor**: `users`,
-   `sessions`, `login_attempts`.
+1. When prompted (or under **Database Access** in the left sidebar),
+   click **Add New Database User**.
+2. Choose **Password** auth, set a username and a strong password
+   (save it somewhere — you'll need it in step 4).
+3. Give it **Read and write to any database** (the default "Atlas
+   admin" built-in role is fine for this project).
 
-## 3. Get your API keys
+## 3. Allow network access
 
-1. In Supabase, go to **Project Settings → API**.
-2. Copy the **Project URL** → this is `SUPABASE_URL`.
-3. Copy the **service_role** key (NOT the `anon` key — the service role key
-   has full database access and must stay server-side only) → this is
-   `SUPABASE_SERVICE_ROLE_KEY`.
+1. Go to **Network Access** in the left sidebar → **Add IP Address**.
+2. Click **Allow Access From Anywhere** (`0.0.0.0/0`).
+   Vercel's serverless functions run from rotating IPs, so a fixed IP
+   allowlist won't work here. Your database is still protected by the
+   username/password from step 2 — just make sure that password is
+   strong and never committed to git.
 
-## 4. Set environment variables in Vercel
+## 4. Get your connection string
+
+1. Go to **Database** → your cluster → **Connect** → **Drivers**.
+2. Copy the connection string. It looks like:
+   ```
+   mongodb+srv://<username>:<password>@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority
+   ```
+3. Replace `<username>` and `<password>` with the database user you
+   created in step 2 (URL-encode the password if it has special
+   characters like `@` or `/`).
+
+## 5. Set environment variables in Vercel
 
 In your Vercel project → **Settings → Environment Variables**, add:
 
 | Name | Value |
 |---|---|
-| `SUPABASE_URL` | from step 3 |
-| `SUPABASE_SERVICE_ROLE_KEY` | from step 3 |
+| `MONGODB_URI` | the connection string from step 4 |
+| `MONGODB_DB` | `lumina` (optional — this is the default if you skip it) |
 | `GROQ_API_KEY` (or `GEMINI_API_KEY` / `ANTHROPIC_API_KEY`) | your AI provider key, as before |
 
 Then redeploy (Vercel → Deployments → ⋯ → Redeploy), or just push a commit.
 
-## 5. Install the new dependencies
+## 6. Install the new dependency
 
-`package.json` now lists `@supabase/supabase-js` and `bcryptjs`. Vercel
-installs these automatically on deploy. If you want to test locally with
-`vercel dev`, run `npm install` first.
+`package.json` now lists `mongodb` and `bcryptjs`. Vercel installs these
+automatically on deploy. If you want to test locally with `vercel dev`,
+run `npm install` first.
+
+## Collections (created automatically — nothing to run by hand)
+
+Unlike a SQL database, MongoDB doesn't need a schema migration. The
+first time the app runs, it automatically creates these collections
+and indexes for you (see `lib/db.js` → `ensureIndexes`):
+
+| Collection | Purpose |
+|---|---|
+| `users` | email (unique), bcrypt password hash, display name |
+| `sessions` | hashed session tokens, auto-expire via a MongoDB TTL index |
+| `loginAttempts` | brute-force tracking, auto-deleted after 1 hour |
+| `chatState` | one document per user: their saved chat history, points, streak, mode |
+
+If you ever want to inspect the data, use **Atlas → Browse Collections**
+in the dashboard, or connect with `mongosh "<your connection string>"`.
 
 ## What you get
 
 - **Sign up / Log in** screen in front of the chat — nobody can use the chat
   (or your AI provider key) without an account.
+- **Cross-device chat history**: your conversation, points, streak, and
+  mode are saved to MongoDB after every exchange and restored on any
+  device you log into (see `api/chat-state.js`).
 - **Passwords are hashed with bcrypt** (cost factor 12) — the plaintext
   password is never stored anywhere, not even briefly in a log.
 - **Sessions are opaque random tokens**, not JWTs. The browser only ever
@@ -57,6 +91,7 @@ installs these automatically on deploy. If you want to test locally with
   leak alone can't be used to forge a session.
 - **Sessions persist for 30 days** ("stay logged in"), and logging out
   deletes the session server-side immediately (not just on this device).
+  Expired sessions are also cleaned up automatically by a MongoDB TTL index.
 - **Brute-force protection**: after 5 failed logins for the same email (or
   20 for the same IP) within 15 minutes, further attempts are rejected with
   a 429 until the window passes.
@@ -70,14 +105,10 @@ installs these automatically on deploy. If you want to test locally with
 ## Notes / things you may want to extend later
 
 - **Password reset** isn't included yet (there's no email-sending set up).
-  If you want it, the cleanest option is to add a Supabase Edge Function or
-  a transactional email provider (Resend, Postmark) and a
-  `/api/auth/request-reset` + `/api/auth/reset` pair using the same
+  If you want it, add a transactional email provider (Resend, Postmark)
+  and a `/api/auth/request-reset` + `/api/auth/reset` pair using the same
   hashed-token pattern as sessions.
-- **Per-user chat history** isn't stored server-side yet — points/streak
-  still live in `localStorage` on that one browser, same as before. If you
-  want chat history synced across devices, add a `messages` table keyed by
-  `user_id` and load/save it from `/api/chat`.
 - **Email verification** isn't required to sign up. If you want to require
-  it, gate login on a `email_verified` column and send a verification link
-  the same way as password reset above.
+  it, add an `emailVerified: false` field on the user document and gate
+  login on it, sending a verification link the same way as password reset
+  above.

@@ -22,9 +22,18 @@
 // actually "safe from attackers" in the way you asked for.
 // ============================================================
 
+import { getSessionUser } from "../lib/session.js";
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  // Require a logged-in user so the AI proxy (and your API costs)
+  // can't be used by anyone who just finds this URL.
+  const user = await getSessionUser(req);
+  if (!user) {
+    return res.status(401).json({ error: "Please log in to chat with Lumina." });
   }
 
   const { provider, payload } = req.body || {};

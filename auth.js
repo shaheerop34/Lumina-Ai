@@ -63,25 +63,24 @@
     }
   }
 
-  function onLoggedOut() {
-    accountChip.hidden = true;
-    overlay.classList.add("show");
-    showTab("login");
-  }
-
   async function checkSession() {
     try {
       const res = await fetch("/api/auth/me", { credentials: "same-origin" });
       const data = await res.json();
       if (res.ok && data.user) {
         onAuthenticated(data.user);
-      } else {
-        overlay.classList.add("show");
+        return;
       }
     } catch (err) {
-      // Network hiccup — still let them try to log in.
-      overlay.classList.add("show");
+      /* fall through to showing the login form */
     }
+    overlay.classList.add("show");
+    try {
+      if (sessionStorage.getItem("lumina_session_expired")) {
+        sessionStorage.removeItem("lumina_session_expired");
+        showError("Your session expired — please log in again.");
+      }
+    } catch (e) {}
   }
 
   loginForm.addEventListener("submit", async (e) => {
@@ -149,14 +148,20 @@
     } catch (err) {
       /* clear client state regardless */
     }
-    logoutBtn.disabled = false;
-    onLoggedOut();
+    // Full reload (not just hiding the UI) so no in-memory chat state from
+    // this account can linger if someone else logs in on the same device.
+    window.location.reload();
   });
 
   // Exposed so app.js can react if a chat call comes back 401
-  // (e.g. the session expired while the tab was open).
+  // (e.g. the session expired while the tab was open). We reload rather
+  // than just re-showing the overlay so no stale in-memory chat state
+  // from the expired session lingers around.
   window.LuminaAuth = {
-    forceReauth: onLoggedOut,
+    forceReauth: () => {
+      try { sessionStorage.setItem("lumina_session_expired", "1"); } catch (e) {}
+      window.location.reload();
+    },
   };
 
   checkSession();

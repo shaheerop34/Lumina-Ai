@@ -133,6 +133,34 @@ const attachChip = document.getElementById("attachChip");
 const attachName = document.getElementById("attachName");
 const attachClear= document.getElementById("attachClear");
 
+/* ================= CLOUD SYNC (per-account, cross-device) =================
+   localStorage above still works as an instant local fallback, but once
+   logged in the source of truth is your account: chat history, points,
+   streak and mode are saved to /api/chat-state after each exchange and
+   reloaded on any device you log into. */
+let syncInFlight = false;
+async function saveStateToServer(){
+  if(syncInFlight) return;
+  syncInFlight = true;
+  try{
+    await fetch("/api/chat-state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ messages, totalPoints, streak, mode })
+    });
+  }catch(e){ /* best-effort — localStorage still has a copy */ }
+  finally{ syncInFlight = false; }
+}
+async function loadStateFromServer(){
+  try{
+    const res = await fetch("/api/chat-state", { credentials: "same-origin" });
+    if(!res.ok) return null;
+    const data = await res.json();
+    return data.state || null;
+  }catch(e){ return null; }
+}
+
 /* ================= MODE ================= */
 function applyMode(){
   const coach = mode === "coach";
@@ -160,6 +188,7 @@ function setMode(m){
   addSystemNote(m === "coach"
     ? "🎓 Switched to <b>Coach mode</b> — corrections and points are back on."
     : "💬 Switched to <b>Casual mode</b> — I'll chat normally, no corrections or points.");
+  saveStateToServer();
 }
 btnCoach.onclick  = () => setMode("coach");
 btnCasual.onclick = () => setMode("casual");
@@ -481,6 +510,7 @@ async function send(){
     loader.querySelector(".bubble").innerHTML = renderBotContent(reply);
     if(mode === "coach") updatePointsFrom(reply);
     speakText(reply);
+    saveStateToServer();
   }catch(err){
     loader.querySelector(".bubble").innerHTML =
       '<div class="error-note"><b>Couldn\'t reach Lumina.</b> ' +
@@ -504,16 +534,43 @@ input.addEventListener("keydown", e => {
 });
 input.addEventListener("input", autoGrow);
 
-function initChatUI(){
-  totalEl.textContent = totalPoints;
-  streakEl.textContent = streak;
+async function initChatUI(){
   refreshSpeakBtn();
-  applyMode();
 
-  addMsg("bot", renderBotContent(WELCOME));
-  messages.push({ role: "user", content: "Hi" });
-  messages.push({ role: "assistant", content: WELCOME });
-  if(mode === "coach" && totalPoints === 0) updatePointsFrom(WELCOME);
+  const remote = await loadStateFromServer();
+
+  if(remote && Array.isArray(remote.messages) && remote.messages.length){
+    // Returning user on any device — restore their saved conversation.
+    messages = remote.messages;
+    totalPoints = Number.isFinite(remote.totalPoints) ? remote.totalPoints : totalPoints;
+    streak = Number.isFinite(remote.streak) ? remote.streak : streak;
+    mode = remote.mode === "casual" ? "casual" : "coach";
+    store.set("lumina_points", String(totalPoints));
+    store.set("lumina_streak", String(streak));
+    store.set("lumina_mode", mode);
+
+    totalEl.textContent = totalPoints;
+    streakEl.textContent = streak;
+    applyMode();
+
+    messages.forEach(m => {
+      if(m.role === "user") addMsg("user", mdToHtml(m.content));
+      else addMsg("bot", renderBotContent(m.content));
+    });
+    addSystemNote("👋 Welcome back — your chat picked up right where you left off.");
+  } else {
+    // First time on this account — show the normal welcome flow.
+    totalEl.textContent = totalPoints;
+    streakEl.textContent = streak;
+    applyMode();
+
+    addMsg("bot", renderBotContent(WELCOME));
+    messages.push({ role: "user", content: "Hi" });
+    messages.push({ role: "assistant", content: WELCOME });
+    if(mode === "coach" && totalPoints === 0) updatePointsFrom(WELCOME);
+    saveStateToServer();
+  }
+
   input.focus();
 }
 
