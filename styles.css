@@ -350,3 +350,99 @@
   @media (prefers-reduced-motion: reduce){
     *{animation:none !important;transition:none !important}
   }
+
+  /* ================= ACCOUNT CHIP ================= */
+  .account-chip{
+    display:flex;align-items:center;gap:10px;
+    background:rgba(11,15,25,.6);
+    border:1px solid var(--border);
+    border-radius:999px;
+    padding:6px 8px 6px 16px;
+    font-family:"Inter",sans-serif;font-size:13px;color:var(--text-2);
+    white-space:nowrap;
+  }
+  .account-chip .who{color:var(--text);font-weight:600;max-width:160px;overflow:hidden;text-overflow:ellipsis}
+  .account-chip .logout-btn{
+    background:transparent;border:1px solid var(--border-strong);color:var(--text-2);
+    border-radius:999px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;
+    transition:all .2s var(--ease);
+  }
+  .account-chip .logout-btn:hover{border-color:var(--danger);color:var(--danger);background:var(--danger-soft)}
+
+  /* ================= AUTH OVERLAY ================= */
+  .auth-overlay{
+    position:fixed;inset:0;z-index:100;
+    display:none;align-items:center;justify-content:center;
+    background:rgba(6,9,16,.72);
+    backdrop-filter:blur(6px) saturate(120%);
+    -webkit-backdrop-filter:blur(6px) saturate(120%);
+    padding:20px;
+  }
+  .auth-overlay.show{display:flex}
+
+  .auth-card{
+    width:100%;max-width:400px;
+    background:var(--surface);
+    border:1px solid var(--border-strong);
+    border-radius:var(--radius-lg);
+    box-shadow:var(--shadow-pop);
+    padding:30px 28px 24px;
+    animation:rise .3s var(--ease) both;
+  }
+  .auth-brand{text-align:center;margin-bottom:20px}
+  .auth-logo{
+    width:52px;height:52px;margin:0 auto 12px;border-radius:16px;
+    background:var(--logo-avatar) center/cover, linear-gradient(135deg, var(--emerald-soft), var(--violet-soft));
+    box-shadow:0 0 0 1px var(--border), 0 8px 20px rgba(16,185,129,.18);
+  }
+  .auth-brand h2{font-family:"Bricolage Grotesque",sans-serif;font-size:22px;font-weight:700;letter-spacing:-.2px}
+  .auth-brand p{font-size:13px;color:var(--text-2);margin-top:6px;line-height:1.5}
+
+  .auth-tabs{
+    display:flex;background:rgba(11,15,25,.6);border:1px solid var(--border);
+    border-radius:999px;padding:3px;gap:2px;margin-bottom:18px;
+  }
+  .auth-tab{
+    flex:1;border:none;background:transparent;color:var(--text-2);
+    font-family:"Inter",sans-serif;font-size:13.5px;font-weight:600;
+    padding:9px 10px;border-radius:999px;cursor:pointer;transition:all .2s var(--ease);
+  }
+  .auth-tab:hover{color:var(--text)}
+  .auth-tab.active{
+    color:#06120d;background:linear-gradient(135deg, var(--emerald), #34d399);
+    box-shadow:0 4px 14px rgba(16,185,129,.35);
+  }
+
+  .auth-error{
+    background:var(--danger-soft);border:1px solid rgba(248,113,113,.35);color:var(--danger);
+    font-size:12.5px;line-height:1.5;border-radius:10px;padding:10px 12px;margin-bottom:14px;
+  }
+
+  .auth-form{display:flex;flex-direction:column;gap:6px}
+  .auth-form label{font-size:12.5px;color:var(--text-2);margin-top:8px;font-weight:600}
+  .auth-form label .opt{font-weight:400;color:var(--text-2);opacity:.7}
+  .auth-form input{
+    background:rgba(11,15,25,.6);border:1px solid var(--border-strong);color:var(--text);
+    border-radius:10px;padding:11px 13px;font-size:14px;font-family:"Inter",sans-serif;
+    transition:border-color .2s var(--ease), box-shadow .2s var(--ease);
+  }
+  .auth-form input:focus{border-color:var(--emerald);box-shadow:0 0 0 3px rgba(16,185,129,.12);outline:none}
+  .auth-submit{
+    margin-top:18px;border:none;border-radius:10px;padding:12px 20px;cursor:pointer;
+    font-family:"Inter",sans-serif;font-size:14.5px;font-weight:700;
+    background:linear-gradient(135deg, var(--emerald), var(--violet));color:#06120d;
+    box-shadow:0 4px 14px rgba(16,185,129,.25);transition:all .2s var(--ease);
+  }
+  .auth-submit:hover{filter:brightness(1.08);transform:translateY(-1px)}
+  .auth-submit:disabled{opacity:.6;cursor:not-allowed;transform:none}
+
+  .auth-switch{margin-top:14px;font-size:12.5px;color:var(--text-2);text-align:center}
+  .link-btn{background:none;border:none;color:var(--emerald);font-weight:600;cursor:pointer;font-size:12.5px;padding:0}
+  .link-btn:hover{text-decoration:underline}
+
+  .auth-footnote{margin-top:18px;font-size:11px;color:var(--text-2);opacity:.75;text-align:center;line-height:1.5}
+
+  @media(max-width:640px){
+    .account-chip .who{max-width:90px}
+    .auth-card{padding:24px 20px 20px}
+  }

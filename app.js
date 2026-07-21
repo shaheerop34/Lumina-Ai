@@ -431,9 +431,14 @@ async function callViaProxy(){
   const res = await fetch(PROXY_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
     body: JSON.stringify({ provider: PROXY_PROVIDER, payload })
   });
   const data = await res.json();
+  if(res.status === 401){
+    if(window.LuminaAuth && window.LuminaAuth.forceReauth) window.LuminaAuth.forceReauth();
+    throw new Error("Your session expired — please log in again.");
+  }
   if(!res.ok) throw new Error("Proxy error " + res.status + ": " + (data.error || JSON.stringify(data)).toString().slice(0,200));
 
   if(PROXY_PROVIDER === "groq"){
@@ -499,13 +504,20 @@ input.addEventListener("keydown", e => {
 });
 input.addEventListener("input", autoGrow);
 
-totalEl.textContent = totalPoints;
-streakEl.textContent = streak;
-refreshSpeakBtn();
-applyMode();
+function initChatUI(){
+  totalEl.textContent = totalPoints;
+  streakEl.textContent = streak;
+  refreshSpeakBtn();
+  applyMode();
 
-addMsg("bot", renderBotContent(WELCOME));
-messages.push({ role: "user", content: "Hi" });
-messages.push({ role: "assistant", content: WELCOME });
-if(mode === "coach" && totalPoints === 0) updatePointsFrom(WELCOME);
-input.focus();
+  addMsg("bot", renderBotContent(WELCOME));
+  messages.push({ role: "user", content: "Hi" });
+  messages.push({ role: "assistant", content: WELCOME });
+  if(mode === "coach" && totalPoints === 0) updatePointsFrom(WELCOME);
+  input.focus();
+}
+
+// Called once by auth.js after a session is confirmed (either an
+// existing cookie on page load, or a fresh login/signup). This keeps
+// the chat — and the API calls it makes — behind a real login.
+window.startLuminaChat = initChatUI;

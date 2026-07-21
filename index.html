@@ -32,7 +32,54 @@
     <span>🔥 <span class="val" id="streakVal">1</span> <span class="label">day streak</span></span>
   </div>
   <button class="speak-toggle" id="speakBtn" aria-pressed="false" title="Have Lumina read replies aloud">🔈 Speak: Off</button>
+  <div class="account-chip" id="accountChip" hidden>
+    <span class="who" id="accountEmail"></span>
+    <button class="logout-btn" id="logoutBtn" type="button" title="Log out">Log out</button>
+  </div>
 </header>
+
+<!-- ================= AUTH OVERLAY ================= -->
+<div class="auth-overlay show" id="authOverlay">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <div class="auth-logo" aria-hidden="true"></div>
+      <h2>Lumina <span style="color:var(--emerald)">AI</span></h2>
+      <p>Sign in to save your progress and keep chatting where you left off.</p>
+    </div>
+
+    <div class="auth-tabs" role="tablist" aria-label="Login or sign up">
+      <button type="button" id="tabLogin" class="auth-tab active" role="tab" aria-selected="true">Log In</button>
+      <button type="button" id="tabRegister" class="auth-tab" role="tab" aria-selected="false">Sign Up</button>
+    </div>
+
+    <p class="auth-error" id="authError" hidden></p>
+
+    <form id="loginForm" class="auth-form" autocomplete="on">
+      <label for="loginEmail">Email</label>
+      <input type="email" id="loginEmail" name="email" autocomplete="username" required placeholder="you@example.com" />
+      <label for="loginPassword">Password</label>
+      <input type="password" id="loginPassword" name="password" autocomplete="current-password" required placeholder="••••••••" />
+      <button type="submit" class="auth-submit" id="loginSubmit">Log In</button>
+      <p class="auth-switch">No account yet? <button type="button" class="link-btn" id="goRegister">Sign up</button></p>
+    </form>
+
+    <form id="registerForm" class="auth-form" autocomplete="on" hidden>
+      <label for="registerName">Name <span class="opt">(optional)</span></label>
+      <input type="text" id="registerName" name="name" autocomplete="name" placeholder="Your name" maxlength="80" />
+      <label for="registerEmail">Email</label>
+      <input type="email" id="registerEmail" name="email" autocomplete="username" required placeholder="you@example.com" />
+      <label for="registerPassword">Password</label>
+      <input type="password" id="registerPassword" name="new-password" autocomplete="new-password" required minlength="8" placeholder="At least 8 characters" />
+      <label for="registerPassword2">Confirm Password</label>
+      <input type="password" id="registerPassword2" name="confirm-password" autocomplete="new-password" required minlength="8" placeholder="Re-enter your password" />
+      <button type="submit" class="auth-submit" id="registerSubmit">Create Account</button>
+      <p class="auth-switch">Already have an account? <button type="button" class="link-btn" id="goLogin">Log in</button></p>
+    </form>
+
+    <p class="auth-footnote">Passwords are hashed and never stored in plain text. Your session stays signed in on this device for 30 days.</p>
+  </div>
+</div>
+<!-- ================= /AUTH OVERLAY ================= -->
 
 <div class="mode-banner" id="modeBanner">
   <b>Coach mode:</b> grammar corrections, band-score grading &amp; points are ON.
@@ -59,6 +106,7 @@
   <div class="hint" id="hintBar">Lumina estimates band scores for practice — official scores may differ. Enter ↵ to send, Shift+Enter for a new line.</div>
 </footer>
 
+<script src="auth.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

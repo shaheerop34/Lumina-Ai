@@ -1,0 +1,11 @@
+{
+  "name": "lumina-ai",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Lumina AI — IELTS coach chat app with secure login",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
+    "bcryptjs": "^2.4.3"
+  }
+}
