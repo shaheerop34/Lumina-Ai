@@ -23,6 +23,16 @@ const GROQ_MODEL = "llama-3.3-70b-versatile";
 // for the user to shorten and resend.
 const MAX_PROMPT_CHARS = 8000;
 
+// Strict word-limit control for AI OUTPUT (not input). This is enforced
+// two ways: (1) the system prompt tells the model to stay under it, which
+// covers the common case cheaply, and (2) enforceWordLimit() below hard-
+// truncates the reply client-side as a guarantee, since LLMs are not
+// perfectly reliable word-counters. The limit also drives max_tokens
+// (see maxTokensForWordLimit), so a tighter limit means a smaller,
+// cheaper, faster request — useful for staying comfortably inside the
+// Groq free-tier's tokens-per-minute rate limit.
+const DEFAULT_WORD_LIMIT = 150, MIN_WORD_LIMIT = 30, MAX_WORD_LIMIT = 400;
+
 /* -------- System prompt: COACH MODE (full Lumina) -------- */
 const COACH_PROMPT = `
 ## 1. Core Persona & Tone
@@ -127,6 +137,12 @@ let lastActive = store.get("lumina_last_active") || ""; // "YYYY-MM-DD" of the l
 let mode = store.get("lumina_mode") || "coach";   // "coach" | "casual"
 let busy = false;
 
+function clampWordLimit(n){
+  n = Number.isFinite(n) ? Math.round(n) : DEFAULT_WORD_LIMIT;
+  return Math.min(MAX_WORD_LIMIT, Math.max(MIN_WORD_LIMIT, n));
+}
+let wordLimit = clampWordLimit(parseInt(store.get("lumina_word_limit"), 10));
+
 /* ================= DOM ================= */
 const thread   = document.getElementById("thread");
 const chatArea = document.getElementById("chatArea");
@@ -141,6 +157,7 @@ const btnCoach = document.getElementById("modeCoach");
 const btnCasual= document.getElementById("modeCasual");
 const micBtn     = document.getElementById("micBtn");
 const speakBtn   = document.getElementById("speakBtn");
+const wordLimitInput = document.getElementById("wordLimitInput");
 const attachBtn  = document.getElementById("attachBtn");
 const fileInput  = document.getElementById("fileInput");
 const attachChip = document.getElementById("attachChip");
@@ -173,6 +190,39 @@ async function loadStateFromServer(){
     const data = await res.json();
     return data.state || null;
   }catch(e){ return null; }
+}
+
+/* ================= WORD LIMIT CONTROL ================= */
+wordLimitInput.value = wordLimit;
+wordLimitInput.addEventListener("change", () => {
+  wordLimit = clampWordLimit(parseInt(wordLimitInput.value, 10));
+  wordLimitInput.value = wordLimit;
+  store.set("lumina_word_limit", String(wordLimit));
+});
+
+// ~1.4 tokens per English word on average, plus a fixed buffer for
+// markdown formatting and the scoreboard block. Scaling max_tokens with
+// the user's word limit (instead of always requesting the max) keeps
+// each Groq request smaller and faster and helps stay well inside the
+// free tier's tokens-per-minute rate limit.
+function maxTokensForWordLimit(){
+  return Math.max(220, Math.min(1200, Math.ceil(wordLimit * 1.4) + 150));
+}
+
+// Hard fallback in case the model overshoots the word limit it was told
+// to respect: truncates the reply BODY (leaving the "📊 Scoreboard" block,
+// if present, untouched) to `limit` words, preferring to cut at the last
+// full sentence rather than mid-word.
+function enforceWordLimit(rawReply, limit){
+  const idx = rawReply.indexOf("📊");
+  const body = idx !== -1 ? rawReply.slice(0, idx) : rawReply;
+  const tail = idx !== -1 ? rawReply.slice(idx) : "";
+  const words = body.trim().split(/\s+/).filter(Boolean);
+  if(words.length <= limit) return rawReply; // already within limit — leave untouched
+  const cut = words.slice(0, limit).join(" ");
+  const lastStop = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "));
+  const clean = lastStop > cut.length * 0.6 ? cut.slice(0, lastStop + 1).trim() : cut.trim() + "…";
+  return tail ? clean + "\n\n---\n" + tail : clean;
 }
 
 /* ================= MODE ================= */
@@ -297,38 +347,91 @@ function toggleListening(){ listening ? stopListening() : startListening(); }
 if(!SpeechRecognitionAPI){ micBtn.title = "Live transcription isn't supported in this browser"; }
 micBtn.onclick = toggleListening;
 
-/* ================= VOICE: SPEAK REPLIES (text → speech) ================= */
+/* ================= VOICE: SPEAK REPLIES (text → speech), prosody-aware =================
+   The Web Speech API has no reliable cross-browser SSML support (Chrome
+   just reads <break>/<emphasis> tags aloud as literal text), so natural
+   pauses and tone shifts are produced manually instead: the cleaned reply
+   is split into punctuation-bounded clauses, and each clause is queued as
+   its OWN utterance with a hand-tuned pause/pitch/rate before the next
+   one starts — giving commas a short breath, sentence-enders a longer
+   one, "?" a rising pitch, and "!" a touch more energy, instead of one
+   flat monotone utterance that reads punctuation as silence or ignores
+   it entirely. */
 let speakEnabled = store.get("lumina_speak") === "1";
 const synth = window.speechSynthesis;
+let speechGeneration = 0; // bumped on every stop/restart so stale queued clauses abort instead of playing late
 
 function refreshSpeakBtn(){
   speakBtn.classList.toggle("active", speakEnabled);
   speakBtn.textContent = speakEnabled ? "🔊 Speak: On" : "🔈 Speak: Off";
   speakBtn.setAttribute("aria-pressed", String(speakEnabled));
 }
-function stopSpeaking(){ if(synth){ synth.cancel(); } }
-function speakText(rawText){
-  if(!speakEnabled || !synth) return;
+function stopSpeaking(){
+  speechGeneration++; // invalidate any pending queued clause BEFORE cancelling the current one
+  if(synth) synth.cancel();
+}
+
+function sanitizeForSpeech(rawText){
   // Strip markdown/emoji clutter so the read-aloud version sounds natural.
-  const clean = rawText
+  return rawText
     .replace(/📊[\s\S]*$/,"")            // drop the scoreboard block
     .replace(/[*_#>`]/g,"")
     .replace(/🔧\s*Quick Polish:?/gi,"Quick polish. ")
     .replace(/\s+/g," ")
     .trim();
+}
+
+// Splits text into clauses on . , ! ? ; : (keeping the delimiter attached)
+// and assigns each one a pause (ms before the NEXT clause starts) plus a
+// pitch/rate multiplier based on its own ending mark.
+function tokenizeForProsody(text){
+  const BASE_RATE = 1, BASE_PITCH = 1;
+  const rawChunks = text.match(/[^.,!?;:]+[.,!?;:]?/g) || [text];
+  return rawChunks.map(chunk => {
+    const trimmed = chunk.trim();
+    if(!trimmed) return null;
+    const mark = trimmed.slice(-1);
+    let pause = 200, rate = BASE_RATE, pitch = BASE_PITCH;
+    if(mark === ","){ pause = 160; }                                            // short breath
+    else if(mark === ";" || mark === ":"){ pause = 240; }                       // medium breath
+    else if(mark === "."){ pause = 380; }                                       // full stop
+    else if(mark === "!"){ pause = 340; rate = BASE_RATE * 1.06; pitch = BASE_PITCH * 1.10; } // excited
+    else if(mark === "?"){ pause = 400; pitch = BASE_PITCH * 1.14; }            // rising, questioning
+    return { text: trimmed, pause, rate, pitch };
+  }).filter(Boolean);
+}
+
+function speakText(rawText){
+  if(!speakEnabled || !synth) return;
+  const clean = sanitizeForSpeech(rawText);
   if(!clean) return;
-  stopSpeaking();
-  // Pause live transcription while Lumina talks, to prevent the mic
-  // from hearing (and transcribing) her own voice.
+
+  stopSpeaking(); // cancel anything already playing and invalidate its queue
+  const myGen = speechGeneration; // this playback's own generation id
+
+  // Pause live transcription while Lumina talks (across the WHOLE queued
+  // sequence, not just the first clause), resume once she's fully done.
   const wasListening = listening;
   if(wasListening) stopListening();
-  const utter = new SpeechSynthesisUtterance(clean);
-  utter.rate = 1;
-  utter.pitch = 1;
-  if(wasListening){
-    utter.onend = () => startListening();
+
+  const chunks = tokenizeForProsody(clean);
+  let i = 0;
+  function playNext(){
+    if(myGen !== speechGeneration) return; // superseded by a newer speakText()/stopSpeaking() call
+    if(i >= chunks.length){
+      if(wasListening) startListening();
+      return;
+    }
+    const { text, pause, rate, pitch } = chunks[i++];
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.rate = rate;
+    utter.pitch = pitch;
+    const advance = () => { if(myGen === speechGeneration) setTimeout(playNext, pause); };
+    utter.onend = advance;
+    utter.onerror = advance;
+    synth.speak(utter);
   }
-  synth.speak(utter);
+  playNext();
 }
 speakBtn.onclick = () => {
   speakEnabled = !speakEnabled;
@@ -338,41 +441,147 @@ speakBtn.onclick = () => {
 };
 if(!synth){ speakBtn.disabled = true; speakBtn.title = "Speech playback isn't supported in this browser"; }
 
-/* ================= BACKGROUND GRADIENT SWITCHER =================
-   Lets the user turn the ambient background glow on/off and pick between
-   a few gradient color presets. Follows the same store.get/store.set +
-   .active class convention as the Speak toggle above. */
-const ambientEl        = document.querySelector(".ambient");
-const gradientToggle   = document.getElementById("gradientToggle");
-const gradientPreset   = document.getElementById("gradientPreset");
-const GRADIENT_PRESET_CLASSES = ["preset-sunset", "preset-ocean", "preset-mono"];
+/* ================= GLOBAL DYNAMIC THEME ENGINE =================
+   Each theme below defines exactly 3 colors: primary/secondary/accent.
+   Every button, border, shadow, card and the ambient background in
+   styles.css derives its color from the --emerald/--violet/--gold root
+   variables (via CSS relative-color syntax, e.g.
+   rgb(from var(--emerald) r g b / .25)), so reassigning just these 3
+   custom properties on <html> instantly re-themes the ENTIRE app in one
+   step — header, composer, message bubbles, scorecard, auth screen,
+   everything — with no per-component JS needed. */
+const GRADIENT_THEMES = {
+  default: { label: "Emerald / Violet", primary: "#10B981", secondary: "#8B5CF6", accent: "#F59E0B" },
+  sunset:  { label: "Sunset",           primary: "#F59E0B", secondary: "#F87171", accent: "#FBBF24" },
+  ocean:   { label: "Ocean",            primary: "#3B82F6", secondary: "#06B6D4", accent: "#38BDF8" },
+  forest:  { label: "Forest",           primary: "#22C55E", secondary: "#15803D", accent: "#84CC16" },
+  mono:    { label: "Monochrome",       primary: "#9CA3AF", secondary: "#6B7280", accent: "#D1D5DB" },
+};
 
-let gradientEnabled = store.get("lumina_gradient_enabled") !== "0"; // on by default
-let gradientTheme   = store.get("lumina_gradient_theme") || "default";
+const rootStyle             = document.documentElement.style;
+const ambientEl             = document.querySelector(".ambient");
+const gradientToggle        = document.getElementById("gradientToggle");
+const themeDropdown         = document.getElementById("themeDropdown");
+const themeDropdownTrigger  = document.getElementById("themeDropdownTrigger");
+const themeDropdownMenu     = document.getElementById("themeDropdownMenu");
+const themeDropdownLabel    = document.getElementById("themeDropdownLabel");
+const themeSwatchCurrent    = document.getElementById("themeSwatchCurrent");
 
-function applyGradientSettings(){
-  ambientEl.classList.toggle("gradient-off", !gradientEnabled);
-  ambientEl.classList.remove(...GRADIENT_PRESET_CLASSES);
-  if(gradientTheme !== "default") ambientEl.classList.add("preset-" + gradientTheme);
+let gradientEnabled = store.get("lumina_gradient_enabled") !== "0"; // ambient glow on by default
+let gradientTheme    = GRADIENT_THEMES[store.get("lumina_gradient_theme")] ? store.get("lumina_gradient_theme") : "default";
+let themeMenuOpen = false;
+let focusedOptionIndex = -1;
+
+function applyThemeColors(key){
+  const t = GRADIENT_THEMES[key] || GRADIENT_THEMES.default;
+  rootStyle.setProperty("--emerald", t.primary);
+  rootStyle.setProperty("--violet", t.secondary);
+  rootStyle.setProperty("--gold", t.accent);
+}
+
+function buildThemeMenu(){
+  themeDropdownMenu.innerHTML = "";
+  Object.entries(GRADIENT_THEMES).forEach(([key, t]) => {
+    const li = document.createElement("li");
+    li.id = "themeOption-" + key;
+    li.setAttribute("role", "option");
+    li.dataset.theme = key;
+    li.setAttribute("aria-selected", String(key === gradientTheme));
+    li.innerHTML =
+      `<span class="theme-swatch" style="--swatch-a:${t.primary};--swatch-b:${t.secondary}" aria-hidden="true"></span>` +
+      `<span>${t.label}</span>`;
+    li.addEventListener("click", () => selectTheme(key));
+    themeDropdownMenu.appendChild(li);
+  });
+}
+
+function refreshThemeUI(){
+  const t = GRADIENT_THEMES[gradientTheme] || GRADIENT_THEMES.default;
+  applyThemeColors(gradientTheme); // button/border/shadow theming always applies...
+  ambientEl.classList.toggle("gradient-off", !gradientEnabled); // ...only the ambient glow itself toggles off
+
+  themeDropdownLabel.textContent = t.label;
+  themeSwatchCurrent.style.setProperty("--swatch-a", t.primary);
+  themeSwatchCurrent.style.setProperty("--swatch-b", t.secondary);
+  [...themeDropdownMenu.children].forEach(li => li.setAttribute("aria-selected", String(li.dataset.theme === gradientTheme)));
 
   gradientToggle.classList.toggle("active", gradientEnabled);
   gradientToggle.textContent = gradientEnabled ? "🌈 Gradient: On" : "⬛ Gradient: Off";
   gradientToggle.setAttribute("aria-pressed", String(gradientEnabled));
-
-  gradientPreset.disabled = !gradientEnabled;
-  gradientPreset.value = gradientTheme;
+  themeDropdownTrigger.disabled = !gradientEnabled;
 }
+
+function selectTheme(key){
+  gradientTheme = GRADIENT_THEMES[key] ? key : "default";
+  store.set("lumina_gradient_theme", gradientTheme);
+  refreshThemeUI();
+  closeThemeMenu();
+  themeDropdownTrigger.focus();
+}
+
+/* ---- Custom listbox open/close + keyboard nav (ARIA "select-only combobox" pattern) ---- */
+function updateOptionFocus(options){
+  options.forEach((li, i) => li.classList.toggle("focused", i === focusedOptionIndex));
+  const active = options[focusedOptionIndex];
+  if(active){
+    themeDropdownTrigger.setAttribute("aria-activedescendant", active.id);
+    active.scrollIntoView({ block: "nearest" });
+  }
+}
+function openThemeMenu(){
+  if(themeDropdownTrigger.disabled || themeMenuOpen) return;
+  themeMenuOpen = true;
+  themeDropdownMenu.classList.add("open");
+  themeDropdownTrigger.setAttribute("aria-expanded", "true");
+  const options = [...themeDropdownMenu.children];
+  focusedOptionIndex = Math.max(0, options.findIndex(li => li.dataset.theme === gradientTheme));
+  updateOptionFocus(options);
+  document.addEventListener("click", onDocClickCloseMenu);
+  document.addEventListener("keydown", onMenuKeydown);
+}
+function closeThemeMenu(){
+  if(!themeMenuOpen) return;
+  themeMenuOpen = false;
+  themeDropdownMenu.classList.remove("open");
+  themeDropdownTrigger.setAttribute("aria-expanded", "false");
+  themeDropdownTrigger.removeAttribute("aria-activedescendant");
+  [...themeDropdownMenu.children].forEach(li => li.classList.remove("focused"));
+  document.removeEventListener("click", onDocClickCloseMenu);
+  document.removeEventListener("keydown", onMenuKeydown);
+}
+function onDocClickCloseMenu(e){
+  if(!themeDropdown.contains(e.target)) closeThemeMenu();
+}
+function onMenuKeydown(e){
+  const options = [...themeDropdownMenu.children];
+  if(!options.length) return;
+  switch(e.key){
+    case "ArrowDown": e.preventDefault(); focusedOptionIndex = (focusedOptionIndex + 1) % options.length; updateOptionFocus(options); break;
+    case "ArrowUp":   e.preventDefault(); focusedOptionIndex = (focusedOptionIndex - 1 + options.length) % options.length; updateOptionFocus(options); break;
+    case "Home":      e.preventDefault(); focusedOptionIndex = 0; updateOptionFocus(options); break;
+    case "End":       e.preventDefault(); focusedOptionIndex = options.length - 1; updateOptionFocus(options); break;
+    case "Enter":
+    case " ":         e.preventDefault(); if(options[focusedOptionIndex]) selectTheme(options[focusedOptionIndex].dataset.theme); break;
+    case "Escape":    e.preventDefault(); closeThemeMenu(); themeDropdownTrigger.focus(); break;
+    case "Tab":       closeThemeMenu(); break;
+  }
+}
+themeDropdownTrigger.addEventListener("click", () => (themeMenuOpen ? closeThemeMenu() : openThemeMenu()));
+themeDropdownTrigger.addEventListener("keydown", (e) => {
+  if(!themeMenuOpen && (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ")){
+    e.preventDefault();
+    openThemeMenu();
+  }
+});
+
 gradientToggle.onclick = () => {
   gradientEnabled = !gradientEnabled;
   store.set("lumina_gradient_enabled", gradientEnabled ? "1" : "0");
-  applyGradientSettings();
+  refreshThemeUI();
 };
-gradientPreset.onchange = () => {
-  gradientTheme = gradientPreset.value;
-  store.set("lumina_gradient_theme", gradientTheme);
-  applyGradientSettings();
-};
-applyGradientSettings();
+
+buildThemeMenu();
+refreshThemeUI();
 
 /* ================= NOTES UPLOAD ================= =========================
    Lets you attach a plain-text note (.txt/.md/.csv) so Lumina can read it
@@ -514,25 +723,29 @@ function refreshDailyStreak(){
 const PROXY_PROVIDER = "groq";
 const PROXY_URL = "/api/chat";
 
-function systemPrompt(){ return mode === "coach" ? COACH_PROMPT : CASUAL_PROMPT; }
+function systemPrompt(){
+  const base = mode === "coach" ? COACH_PROMPT : CASUAL_PROMPT;
+  return base + `\n\n## Output Length Constraint\nYour ENTIRE reply (excluding any "📊 Your Scoreboard" block) MUST be ${wordLimit} words or fewer. Count your words as you write and stop before exceeding this — do not pad the response to reach the limit, and do not mention this constraint to the user.`;
+}
 
 async function callViaProxy(){
   let payload;
+  const maxTokens = maxTokensForWordLimit();
   if(PROXY_PROVIDER === "groq"){
     payload = {
       model: GROQ_MODEL,
       messages: [{ role: "system", content: systemPrompt() }, ...messages.map(m => ({ role: m.role, content: m.content }))],
-      max_tokens: 1200,
+      max_tokens: maxTokens,
       temperature: 0.7
     };
   } else if(PROXY_PROVIDER === "gemini"){
     payload = {
       systemInstruction: { parts: [{ text: systemPrompt() }] },
       contents: messages.map(m => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
-      generationConfig: { maxOutputTokens: 1200, temperature: 0.7 }
+      generationConfig: { maxOutputTokens: maxTokens, temperature: 0.7 }
     };
   } else {
-    payload = { model: CLAUDE_MODEL, max_tokens: 1000, system: systemPrompt(), messages };
+    payload = { model: CLAUDE_MODEL, max_tokens: maxTokens, system: systemPrompt(), messages };
   }
 
   const res = await fetch(PROXY_URL, {
@@ -590,7 +803,8 @@ async function send(){
   const loader = addMsg("bot",'<div class="typing"><span></span><span></span><span></span></div>');
 
   try{
-    const reply = await callAPI();
+    const raw = await callAPI();
+    const reply = enforceWordLimit(raw, wordLimit); // hard fallback if the model overshot
     messages.push({ role: "assistant", content: reply });
     loader.querySelector(".bubble").innerHTML = renderBotContent(reply);
     if(mode === "coach") updatePointsFrom(reply);
