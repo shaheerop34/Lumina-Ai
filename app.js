@@ -197,7 +197,34 @@ async function loadProfileFromServer(){
    Each conversation shown in the sidebar is its own document saved via
    /api/conversations — switching or deleting one never touches the
    profile above, the same separation Claude/ChatGPT/Gemini use between
-   chat history and account-level stats. */
+   chat history and account-level stats.
+
+   Resilience: if the server can't be reached (no backend deployed yet,
+   offline, etc.), conversations transparently fall back to being saved
+   in this browser's localStorage instead — under a "local_"-prefixed id
+   — so "New Chat" always actually saves the previous chat into the
+   sidebar rather than silently losing it or surfacing a scary error.
+   Once fetchConversationList() confirms the server IS reachable,
+   everything goes back to being saved for real, cross-device. */
+const LOCAL_CONVOS_KEY = "lumina_local_conversations";
+let useLocalConversations = false; // set once in initChatUI if the server is unreachable at load time
+
+function readLocalConvos(){
+  try{ return JSON.parse(store.get(LOCAL_CONVOS_KEY) || "[]"); }catch(e){ return []; }
+}
+function writeLocalConvos(list){ store.set(LOCAL_CONVOS_KEY, JSON.stringify(list)); }
+function newLocalId(){ return "local_" + Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
+function toListMeta(c){ return { id: c.id, title: c.title, mode: c.mode, updatedAt: c.updatedAt, createdAt: c.createdAt }; }
+
+function createLocalConversation(initialMessages){
+  const now = new Date().toISOString();
+  const convo = { id: newLocalId(), title: "New Chat", mode, messages: initialMessages, updatedAt: now, createdAt: now };
+  const list = readLocalConvos();
+  list.unshift(convo);
+  writeLocalConvos(list);
+  return toListMeta(convo);
+}
+
 let conversationSyncInFlight = false;
 async function fetchConversationList(){
   try{
@@ -208,18 +235,27 @@ async function fetchConversationList(){
   }catch(e){ return null; }
 }
 async function createConversationOnServer(initialMessages){
-  try{
-    const res = await fetch("/api/conversations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "same-origin",
-      body: JSON.stringify({ mode, messages: initialMessages })
-    });
-    if(!res.ok) return null;
-    return await res.json(); // { id, title, mode, updatedAt, createdAt }
-  }catch(e){ return null; }
+  if(!useLocalConversations){
+    try{
+      const res = await fetch("/api/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ mode, messages: initialMessages })
+      });
+      if(res.ok) return await res.json(); // { id, title, mode, updatedAt, createdAt }
+    }catch(e){ /* fall through to local */ }
+  }
+  // Server unreachable — either for this whole session, or just this one
+  // call — fall back to saving locally so the chat is never lost and
+  // still shows up in the sidebar right away.
+  return createLocalConversation(initialMessages);
 }
 async function loadConversationFromServer(id){
+  if(id.startsWith("local_")){
+    const convo = readLocalConvos().find(c => c.id === id);
+    return convo ? { id: convo.id, title: convo.title, mode: convo.mode, messages: convo.messages } : null;
+  }
   try{
     const res = await fetch("/api/conversations/" + encodeURIComponent(id), { credentials: "same-origin" });
     if(!res.ok) return null;
@@ -230,18 +266,36 @@ async function loadConversationFromServer(id){
 async function saveConversationToServer(){
   if(!activeConversationId || conversationSyncInFlight) return;
   conversationSyncInFlight = true;
+  const meta = conversations.find(c => c.id === activeConversationId);
   try{
-    const meta = conversations.find(c => c.id === activeConversationId);
-    await fetch("/api/conversations/" + encodeURIComponent(activeConversationId), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      credentials: "same-origin",
-      body: JSON.stringify({ messages, mode, title: meta ? meta.title : undefined })
-    });
-  }catch(e){ /* best-effort — localStorage still has a copy of points/streak, if not messages */ }
+    if(activeConversationId.startsWith("local_")){
+      const list = readLocalConvos();
+      const idx = list.findIndex(c => c.id === activeConversationId);
+      const now = new Date().toISOString();
+      const record = {
+        id: activeConversationId,
+        title: (meta && meta.title) || (idx !== -1 ? list[idx].title : "New Chat"),
+        mode, messages, updatedAt: now,
+        createdAt: idx !== -1 ? list[idx].createdAt : now,
+      };
+      if(idx !== -1) list[idx] = record; else list.unshift(record);
+      writeLocalConvos(list);
+    } else {
+      await fetch("/api/conversations/" + encodeURIComponent(activeConversationId), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ messages, mode, title: meta ? meta.title : undefined })
+      });
+    }
+  }catch(e){ /* best-effort */ }
   finally{ conversationSyncInFlight = false; }
 }
 async function deleteConversationOnServer(id){
+  if(id.startsWith("local_")){
+    writeLocalConvos(readLocalConvos().filter(c => c.id !== id));
+    return true;
+  }
   try{
     const res = await fetch("/api/conversations/" + encodeURIComponent(id), { method: "DELETE", credentials: "same-origin" });
     return res.ok;
@@ -805,14 +859,12 @@ async function startNewChat({ isFirstEver = false } = {}){
   const initialMessages = [{ role: "user", content: "Hi" }, { role: "assistant", content: WELCOME }];
   messages = initialMessages.slice();
 
+  // createConversationOnServer() always succeeds — it falls back to a
+  // local browser-storage conversation if the server can't be reached,
+  // so the previous chat is never silently lost.
   const created = await createConversationOnServer(initialMessages);
-  if(created && created.id){
-    activeConversationId = created.id;
-    conversations.unshift(created);
-  } else {
-    activeConversationId = null; // offline/error fallback — this chat won't persist past a reload
-    addSystemNote("⚠️ Couldn't save this as a new conversation on the server — it will be lost on reload.");
-  }
+  activeConversationId = created.id;
+  conversations.unshift(created);
 
   addMsg("bot", renderBotContent(WELCOME));
   if(isFirstEver && mode === "coach" && totalPoints === 0){
@@ -1171,29 +1223,35 @@ async function initChatUI(){
   await saveProfileToServer(); // persist any streak bump from the line above right away
 
   // ---- Conversation list + whichever one was active most recently ----
+  // If the server can't be reached, transparently switch to conversations
+  // saved in this browser's localStorage instead — same sidebar, same
+  // New Chat/switch/delete behavior, just not synced cross-device until
+  // the server is reachable again.
   const list = await fetchConversationList();
-
+  let usingLocalFallback = false;
   if(list === null){
-    // Couldn't reach the server at all — degrade to an unsaved, offline
-    // session instead of guessing at (and possibly duplicating) the
-    // account's real chat history.
-    mode = store.get("lumina_mode") || "coach";
-    applyMode();
-    addMsg("bot", renderBotContent(WELCOME));
-    messages = [{ role: "user", content: "Hi" }, { role: "assistant", content: WELCOME }];
-    addSystemNote("⚠️ Couldn't reach the server to load your chat history — this session is offline and won't be saved.");
-    renderSuggestions();
+    useLocalConversations = true;
+    usingLocalFallback = true;
+    conversations = readLocalConvos().map(toListMeta);
   } else {
     conversations = list;
-    if(conversations.length){
-      await switchToConversation(conversations[0].id); // most recently updated
-      addSystemNote("👋 Welcome back — your chat picked up right where you left off.");
-      if(broke){
-        addSystemNote(`💔 <b>Streak broken</b> — you were away for ${gapDays} day${gapDays === 1 ? "" : "s"}, so your daily streak has reset to <b>Day 1</b>. Come back daily to build it back up!`);
-      }
+  }
+
+  if(conversations.length){
+    await switchToConversation(conversations[0].id); // most recently updated
+    if(usingLocalFallback){
+      addSystemNote("💾 The server isn't reachable right now — chats are being saved in this browser instead of your account until it's back.");
     } else {
-      // Genuinely brand-new account — normal welcome flow, first-ever bonus included.
-      await startNewChat({ isFirstEver: true });
+      addSystemNote("👋 Welcome back — your chat picked up right where you left off.");
+    }
+    if(broke){
+      addSystemNote(`💔 <b>Streak broken</b> — you were away for ${gapDays} day${gapDays === 1 ? "" : "s"}, so your daily streak has reset to <b>Day 1</b>. Come back daily to build it back up!`);
+    }
+  } else {
+    // Genuinely brand-new account — normal welcome flow, first-ever bonus included.
+    await startNewChat({ isFirstEver: true });
+    if(usingLocalFallback){
+      addSystemNote("💾 The server isn't reachable right now — chats are being saved in this browser instead of your account until it's back.");
     }
   }
 
