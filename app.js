@@ -129,6 +129,8 @@ const store = {
 
 /* ================= STATE ================= */
 let messages = [];
+let conversations = [];          // sidebar metadata: [{id,title,mode,updatedAt,createdAt}, ...]
+let activeConversationId = null; // which conversation `messages` currently holds
 let totalPoints = parseInt(store.get("lumina_points") || "0", 10) || 0;
 let streak = parseInt(store.get("lumina_streak") || "1", 10) || 1;
 let lastActive = store.get("lumina_last_active") || ""; // "YYYY-MM-DD" of the last day the streak was counted
@@ -164,32 +166,86 @@ const attachChip = document.getElementById("attachChip");
 const attachName = document.getElementById("attachName");
 const attachClear= document.getElementById("attachClear");
 
-/* ================= CLOUD SYNC (per-account, cross-device) =================
-   localStorage above still works as an instant local fallback, but once
-   logged in the source of truth is your account: chat history, points,
-   streak and mode are saved to /api/chat-state after each exchange and
-   reloaded on any device you log into. */
-let syncInFlight = false;
-async function saveStateToServer(){
-  if(syncInFlight) return;
-  syncInFlight = true;
+/* ================= ACCOUNT PROFILE SYNC (points/streak, cross-device) =================
+   Points, streak, and rank are account-level — the same regardless of
+   which conversation is open — so they're persisted separately from any
+   one chat's messages, via /api/profile. */
+let profileSyncInFlight = false;
+async function saveProfileToServer(){
+  if(profileSyncInFlight) return;
+  profileSyncInFlight = true;
   try{
-    await fetch("/api/chat-state", {
+    await fetch("/api/profile", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "same-origin",
-      body: JSON.stringify({ messages, totalPoints, streak, mode, lastActive })
+      body: JSON.stringify({ totalPoints, streak, lastActive })
     });
   }catch(e){ /* best-effort — localStorage still has a copy */ }
-  finally{ syncInFlight = false; }
+  finally{ profileSyncInFlight = false; }
 }
-async function loadStateFromServer(){
+async function loadProfileFromServer(){
   try{
-    const res = await fetch("/api/chat-state", { credentials: "same-origin" });
+    const res = await fetch("/api/profile", { credentials: "same-origin" });
     if(!res.ok) return null;
     const data = await res.json();
-    return data.state || null;
+    return data.profile || null;
   }catch(e){ return null; }
+}
+
+/* ================= CONVERSATION SYNC (per-chat history, cross-device) =================
+   Each conversation shown in the sidebar is its own document saved via
+   /api/conversations — switching or deleting one never touches the
+   profile above, the same separation Claude/ChatGPT/Gemini use between
+   chat history and account-level stats. */
+let conversationSyncInFlight = false;
+async function fetchConversationList(){
+  try{
+    const res = await fetch("/api/conversations", { credentials: "same-origin" });
+    if(!res.ok) return null;
+    const data = await res.json();
+    return Array.isArray(data.conversations) ? data.conversations : [];
+  }catch(e){ return null; }
+}
+async function createConversationOnServer(initialMessages){
+  try{
+    const res = await fetch("/api/conversations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ mode, messages: initialMessages })
+    });
+    if(!res.ok) return null;
+    return await res.json(); // { id, title, mode, updatedAt, createdAt }
+  }catch(e){ return null; }
+}
+async function loadConversationFromServer(id){
+  try{
+    const res = await fetch("/api/conversations/" + encodeURIComponent(id), { credentials: "same-origin" });
+    if(!res.ok) return null;
+    const data = await res.json();
+    return data.conversation || null;
+  }catch(e){ return null; }
+}
+async function saveConversationToServer(){
+  if(!activeConversationId || conversationSyncInFlight) return;
+  conversationSyncInFlight = true;
+  try{
+    const meta = conversations.find(c => c.id === activeConversationId);
+    await fetch("/api/conversations/" + encodeURIComponent(activeConversationId), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ messages, mode, title: meta ? meta.title : undefined })
+    });
+  }catch(e){ /* best-effort — localStorage still has a copy of points/streak, if not messages */ }
+  finally{ conversationSyncInFlight = false; }
+}
+async function deleteConversationOnServer(id){
+  try{
+    const res = await fetch("/api/conversations/" + encodeURIComponent(id), { method: "DELETE", credentials: "same-origin" });
+    return res.ok;
+  }catch(e){ return false; }
 }
 
 /* ================= WORD LIMIT CONTROL ================= */
@@ -252,7 +308,9 @@ function setMode(m){
   addSystemNote(m === "coach"
     ? "🎓 Switched to <b>Coach mode</b> — corrections and points are back on."
     : "💬 Switched to <b>Casual mode</b> — I'll chat normally, no corrections or points.");
-  saveStateToServer();
+  const meta = conversations.find(c => c.id === activeConversationId);
+  if(meta) meta.mode = m;
+  saveConversationToServer();
 }
 btnCoach.onclick  = () => setMode("coach");
 btnCasual.onclick = () => setMode("casual");
@@ -396,24 +454,29 @@ function sanitizeForSpeech(rawText){
     .trim();
 }
 
-// Splits text into clauses on . , ! ? ; : (keeping the delimiter attached)
-// and assigns each one a pause (ms before the NEXT clause starts) plus a
-// pitch/rate multiplier based on its own ending mark. Pauses are kept short
-// on purpose — anything longer compounds noticeably across a reply with
-// many short clauses and starts to feel sluggish rather than natural.
+// Splits text into clauses on SENTENCE-level punctuation only (. ! ? ; :) —
+// commas are deliberately NOT a split point. Every synth.speak() call has
+// its own engine startup overhead, and splitting a fresh utterance for
+// every single comma (the previous version) meant that overhead got paid
+// once per comma across a whole reply — that per-utterance tax, not the
+// pause values themselves, was the main reason speech felt sluggish.
+// Commas stay embedded in their clause's text instead; the speech engine
+// already gives a real comma a small natural pause on its own.
+// BASE_RATE is bumped above the engine default of 1 because "normal" is a
+// noticeably slow, deliberate pace on most voices for a conversational
+// assistant.
 function tokenizeForProsody(text){
-  const BASE_RATE = 1, BASE_PITCH = 1;
-  const rawChunks = text.match(/[^.,!?;:]+[.,!?;:]?/g) || [text];
+  const BASE_RATE = 1.15, BASE_PITCH = 1;
+  const rawChunks = text.match(/[^.!?;:]+[.!?;:]?/g) || [text];
   return rawChunks.map(chunk => {
     const trimmed = chunk.trim();
     if(!trimmed) return null;
     const mark = trimmed.slice(-1);
-    let pause = 140, rate = BASE_RATE, pitch = BASE_PITCH;
-    if(mark === ","){ pause = 90; }                                             // short breath
-    else if(mark === ";" || mark === ":"){ pause = 140; }                       // medium breath
-    else if(mark === "."){ pause = 230; }                                       // full stop
-    else if(mark === "!"){ pause = 230; rate = BASE_RATE * 1.05; pitch = BASE_PITCH * 1.08; } // excited
-    else if(mark === "?"){ pause = 250; pitch = BASE_PITCH * 1.12; }            // rising, questioning
+    let pause = 90, rate = BASE_RATE, pitch = BASE_PITCH;
+    if(mark === ";" || mark === ":"){ pause = 100; }                            // medium breath
+    else if(mark === "."){ pause = 140; }                                       // full stop
+    else if(mark === "!"){ pause = 140; rate = BASE_RATE * 1.05; pitch = BASE_PITCH * 1.08; } // excited
+    else if(mark === "?"){ pause = 160; pitch = BASE_PITCH * 1.12; }            // rising, questioning
     return { text: trimmed, pause, rate, pitch };
   }).filter(Boolean);
 }
@@ -599,6 +662,187 @@ gradientToggle.onclick = () => {
 
 buildThemeMenu();
 refreshThemeUI();
+
+/* ================= SIDEBAR: CHAT HISTORY (New Chat / switch / delete) =================
+   Mirrors the Claude/ChatGPT/Gemini pattern: an ever-growing list of
+   separate conversations in the sidebar, a prominent "+ New Chat" button,
+   and per-item delete. Switching or deleting a conversation NEVER touches
+   totalPoints/streak/rank — those are account-level (see the profile sync
+   above), not per-chat. */
+const sidebarEl          = document.getElementById("sidebar");
+const sidebarBackdrop    = document.getElementById("sidebarBackdrop");
+const sidebarToggleBtn   = document.getElementById("sidebarToggle");
+const newChatBtn         = document.getElementById("newChatBtn");
+const conversationListEl = document.getElementById("conversationList");
+
+function isMobileSidebar(){
+  return window.matchMedia("(max-width: 860px)").matches;
+}
+function updateSidebarToggleAria(){
+  const expanded = isMobileSidebar()
+    ? sidebarEl.classList.contains("open")
+    : !sidebarEl.classList.contains("collapsed");
+  sidebarToggleBtn.setAttribute("aria-expanded", String(expanded));
+}
+function openSidebar(){
+  if(isMobileSidebar()){
+    sidebarEl.classList.add("open");
+    sidebarBackdrop.classList.add("show");
+  } else {
+    sidebarEl.classList.remove("collapsed");
+  }
+  updateSidebarToggleAria();
+}
+function closeSidebar(){
+  if(isMobileSidebar()){
+    sidebarEl.classList.remove("open");
+    sidebarBackdrop.classList.remove("show");
+  } else {
+    sidebarEl.classList.add("collapsed");
+  }
+  updateSidebarToggleAria();
+}
+function toggleSidebar(){
+  const currentlyOpen = isMobileSidebar() ? sidebarEl.classList.contains("open") : !sidebarEl.classList.contains("collapsed");
+  currentlyOpen ? closeSidebar() : openSidebar();
+}
+sidebarToggleBtn.onclick = toggleSidebar;
+sidebarBackdrop.onclick = closeSidebar;
+updateSidebarToggleAria(); // correct the initial aria-expanded for whichever viewport loaded first
+
+function escapeHtml(s){
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+function relativeTime(iso){
+  if(!iso) return "";
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.round(diffMs / 60000);
+  if(mins < 1) return "Just now";
+  if(mins < 60) return mins + "m";
+  const hrs = Math.round(mins / 60);
+  if(hrs < 24) return hrs + "h";
+  const days = Math.round(hrs / 24);
+  if(days < 7) return days + "d";
+  return new Date(iso).toLocaleDateString();
+}
+// The first two seeded messages are always {user:"Hi"}/{assistant:WELCOME};
+// title a conversation from the first REAL user message instead.
+function titleFromMessages(msgs){
+  const real = (msgs || []).find(m => m.role === "user" && m.content && m.content.trim() && m.content.trim() !== "Hi");
+  const clean = (real ? real.content : "").replace(/\s+/g," ").trim();
+  return clean ? (clean.length > 48 ? clean.slice(0,48).trim() + "…" : clean) : "New Chat";
+}
+
+function renderConversationList(){
+  conversationListEl.innerHTML = "";
+  conversations.forEach(c => {
+    const li = document.createElement("li");
+    li.className = "conversation-item" + (c.id === activeConversationId ? " active" : "");
+    li.dataset.id = c.id;
+    li.tabIndex = 0;
+    li.innerHTML =
+      `<span class="title">${escapeHtml(c.title || "New Chat")}</span>` +
+      `<span class="time">${relativeTime(c.updatedAt)}</span>` +
+      `<button class="delete-btn" type="button" aria-label="Delete conversation" title="Delete conversation">🗑</button>`;
+    li.addEventListener("click", (e) => {
+      if(e.target.closest(".delete-btn")) return;
+      if(c.id !== activeConversationId) switchToConversation(c.id);
+      if(isMobileSidebar()) closeSidebar();
+    });
+    li.addEventListener("keydown", (e) => {
+      if((e.key === "Enter" || e.key === " ") && !e.target.closest(".delete-btn")){
+        e.preventDefault();
+        if(c.id !== activeConversationId) switchToConversation(c.id);
+      }
+    });
+    li.querySelector(".delete-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      handleDeleteConversation(c.id);
+    });
+    conversationListEl.appendChild(li);
+  });
+}
+
+function resetThreadUI(){
+  thread.innerHTML = "";
+  sugBox.innerHTML = "";
+  attachedNote = null;
+  attachChip.classList.remove("show");
+  if(listening) stopListening();
+  stopSpeaking();
+}
+
+async function switchToConversation(id){
+  const conv = await loadConversationFromServer(id);
+  if(!conv){
+    addSystemNote("⚠️ Couldn't load that conversation — please try again.");
+    return;
+  }
+  activeConversationId = conv.id;
+  messages = Array.isArray(conv.messages) ? conv.messages : [];
+  mode = conv.mode === "casual" ? "casual" : "coach";
+  store.set("lumina_mode", mode);
+  applyMode();
+
+  resetThreadUI();
+  if(messages.length){
+    messages.forEach(m => {
+      if(m.role === "user") addMsg("user", mdToHtml(m.content));
+      else addMsg("bot", renderBotContent(m.content));
+    });
+  } else {
+    addMsg("bot", renderBotContent(WELCOME));
+  }
+  renderSuggestions();
+  renderConversationList();
+  input.focus();
+}
+
+// isFirstEver gates the one-time "+10 First Session Check-in" bonus so
+// it can never be re-triggered just by clicking "+ New Chat" repeatedly.
+async function startNewChat({ isFirstEver = false } = {}){
+  resetThreadUI();
+  const initialMessages = [{ role: "user", content: "Hi" }, { role: "assistant", content: WELCOME }];
+  messages = initialMessages.slice();
+
+  const created = await createConversationOnServer(initialMessages);
+  if(created && created.id){
+    activeConversationId = created.id;
+    conversations.unshift(created);
+  } else {
+    activeConversationId = null; // offline/error fallback — this chat won't persist past a reload
+    addSystemNote("⚠️ Couldn't save this as a new conversation on the server — it will be lost on reload.");
+  }
+
+  addMsg("bot", renderBotContent(WELCOME));
+  if(isFirstEver && mode === "coach" && totalPoints === 0){
+    updatePointsFrom(WELCOME);
+  }
+  renderSuggestions();
+  renderConversationList();
+  await saveProfileToServer();
+  input.focus();
+}
+newChatBtn.onclick = () => startNewChat();
+
+async function handleDeleteConversation(id){
+  if(!window.confirm("Delete this conversation? This can't be undone.")) return;
+  const ok = await deleteConversationOnServer(id);
+  if(!ok){
+    addSystemNote("⚠️ Couldn't delete that conversation — please try again.");
+    return;
+  }
+  conversations = conversations.filter(c => c.id !== id);
+  if(id === activeConversationId){
+    if(conversations.length){
+      await switchToConversation(conversations[0].id);
+    } else {
+      await startNewChat();
+    }
+  } else {
+    renderConversationList();
+  }
+}
 
 /* ================= NOTES UPLOAD ================= =========================
    Lets you attach a plain-text note (.txt/.md/.csv) so Lumina can read it
@@ -871,7 +1115,21 @@ async function send(){
     loader.querySelector(".bubble").innerHTML = renderBotContent(reply);
     if(mode === "coach") updatePointsFrom(reply);
     speakText(reply);
-    saveStateToServer();
+
+    // Keep the sidebar's title/ordering fresh without a full re-fetch:
+    // rename a still-untitled conversation from the first real message,
+    // and bump it to the top like every popular chat app does.
+    const idx = conversations.findIndex(c => c.id === activeConversationId);
+    if(idx !== -1){
+      if(conversations[idx].title === "New Chat") conversations[idx].title = titleFromMessages(messages);
+      conversations[idx].updatedAt = new Date().toISOString();
+      const [item] = conversations.splice(idx, 1);
+      conversations.unshift(item);
+      renderConversationList();
+    }
+
+    await saveConversationToServer();
+    await saveProfileToServer();
   }catch(err){
     loader.querySelector(".bubble").innerHTML =
       '<div class="error-note"><b>Couldn\'t reach Lumina.</b> ' +
@@ -898,44 +1156,45 @@ input.addEventListener("input", autoGrow);
 async function initChatUI(){
   refreshSpeakBtn();
 
-  const remote = await loadStateFromServer();
-
-  if(remote && Array.isArray(remote.messages) && remote.messages.length){
-    // Returning user on any device — restore their saved conversation.
-    messages = remote.messages;
-    totalPoints = Number.isFinite(remote.totalPoints) ? remote.totalPoints : totalPoints;
-    streak = Number.isFinite(remote.streak) ? remote.streak : streak;
-    lastActive = typeof remote.lastActive === "string" && remote.lastActive ? remote.lastActive : lastActive;
-    mode = remote.mode === "casual" ? "casual" : "coach";
+  // ---- Account-level profile: points/streak/rank — independent of any
+  // single conversation, loaded once regardless of which chat opens. ----
+  const profile = await loadProfileFromServer();
+  if(profile){
+    totalPoints = Number.isFinite(profile.totalPoints) ? profile.totalPoints : totalPoints;
+    streak = Number.isFinite(profile.streak) ? profile.streak : streak;
+    lastActive = typeof profile.lastActive === "string" && profile.lastActive ? profile.lastActive : lastActive;
     store.set("lumina_points", String(totalPoints));
-    store.set("lumina_mode", mode);
+  }
+  totalEl.textContent = totalPoints;
+  refreshRankUI();
+  const { broke, gapDays } = computeDailyStreak(); // may bump the streak if today is a new consecutive day
+  await saveProfileToServer(); // persist any streak bump from the line above right away
 
-    totalEl.textContent = totalPoints;
-    refreshRankUI();
+  // ---- Conversation list + whichever one was active most recently ----
+  const list = await fetchConversationList();
+
+  if(list === null){
+    // Couldn't reach the server at all — degrade to an unsaved, offline
+    // session instead of guessing at (and possibly duplicating) the
+    // account's real chat history.
+    mode = store.get("lumina_mode") || "coach";
     applyMode();
-    const { broke, gapDays } = computeDailyStreak(); // may bump the streak if today is a new consecutive day
-
-    messages.forEach(m => {
-      if(m.role === "user") addMsg("user", mdToHtml(m.content));
-      else addMsg("bot", renderBotContent(m.content));
-    });
-    addSystemNote("👋 Welcome back — your chat picked up right where you left off.");
-    if(broke){
-      addSystemNote(`💔 <b>Streak broken</b> — you were away for ${gapDays} day${gapDays === 1 ? "" : "s"}, so your daily streak has reset to <b>Day 1</b>. Come back daily to build it back up!`);
-    }
-    saveStateToServer();
-  } else {
-    // First time on this account — show the normal welcome flow.
-    totalEl.textContent = totalPoints;
-    refreshRankUI();
-    applyMode();
-    computeDailyStreak(); // always a fresh Day 1 here — no prior lastActive to break
-
     addMsg("bot", renderBotContent(WELCOME));
-    messages.push({ role: "user", content: "Hi" });
-    messages.push({ role: "assistant", content: WELCOME });
-    if(mode === "coach" && totalPoints === 0) updatePointsFrom(WELCOME);
-    saveStateToServer();
+    messages = [{ role: "user", content: "Hi" }, { role: "assistant", content: WELCOME }];
+    addSystemNote("⚠️ Couldn't reach the server to load your chat history — this session is offline and won't be saved.");
+    renderSuggestions();
+  } else {
+    conversations = list;
+    if(conversations.length){
+      await switchToConversation(conversations[0].id); // most recently updated
+      addSystemNote("👋 Welcome back — your chat picked up right where you left off.");
+      if(broke){
+        addSystemNote(`💔 <b>Streak broken</b> — you were away for ${gapDays} day${gapDays === 1 ? "" : "s"}, so your daily streak has reset to <b>Day 1</b>. Come back daily to build it back up!`);
+      }
+    } else {
+      // Genuinely brand-new account — normal welcome flow, first-ever bonus included.
+      await startNewChat({ isFirstEver: true });
+    }
   }
 
   input.focus();

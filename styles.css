@@ -64,6 +64,82 @@
   .ambient.gradient-off::before,.ambient.gradient-off::after{opacity:0}
   body > *:not(.ambient){position:relative;z-index:1}
 
+  /* ================= APP SHELL (sidebar + main column) =================
+     Note for maintainers: neither this rule nor .main-col below may use
+     transform/filter/perspective/contain/will-change/backdrop-filter —
+     the auth overlay (position:fixed) lives inside .main-col, and any of
+     those properties on an ANCESTOR would turn it into a new containing
+     block and break the overlay's full-viewport positioning. */
+  .app-shell{flex:1;display:flex;min-height:0;width:100%}
+  .main-col{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
+
+  /* ---------- Sidebar (chat history, à la Claude/ChatGPT/Gemini) ---------- */
+  .sidebar{
+    width:272px;flex-shrink:0;
+    display:flex;flex-direction:column;
+    background:rgba(11,15,25,.55);
+    border-right:1px solid var(--border);
+    transition:width .2s var(--ease);
+  }
+  .sidebar.collapsed{width:0;border-right:none;overflow:hidden}
+
+  .sidebar-header{padding:14px}
+  .new-chat-btn{
+    width:100%;display:flex;align-items:center;justify-content:center;gap:8px;
+    background:linear-gradient(135deg, var(--emerald), var(--violet));
+    color:var(--on-accent);border:none;border-radius:12px;
+    padding:11px 14px;font-family:"Inter",sans-serif;font-weight:700;font-size:14px;
+    cursor:pointer;transition:all .2s var(--ease);white-space:nowrap;
+    box-shadow:0 4px 14px rgb(from var(--emerald) r g b / .25);
+  }
+  .new-chat-btn:hover{filter:brightness(1.08);transform:translateY(-1px)}
+  .new-chat-btn:active{transform:scale(.97)}
+
+  .conversation-list{
+    list-style:none;flex:1;overflow-y:auto;overflow-x:hidden;
+    padding:4px 10px 14px;display:flex;flex-direction:column;gap:2px;
+  }
+  .conversation-item{
+    display:flex;align-items:center;gap:8px;
+    padding:10px 10px;border-radius:10px;cursor:pointer;
+    color:var(--text-2);font-family:"Inter",sans-serif;font-size:13.5px;
+    transition:background .15s var(--ease), color .15s var(--ease);
+    outline:none;
+  }
+  .conversation-item:hover,
+  .conversation-item:focus-visible{background:rgba(255,255,255,.05);color:var(--text)}
+  .conversation-item.active{background:var(--emerald-soft);color:var(--text);font-weight:600}
+  .conversation-item .title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .conversation-item .time{flex-shrink:0;font-size:11px;color:var(--text-2);opacity:.75}
+  .conversation-item .delete-btn{
+    flex-shrink:0;opacity:0;background:none;border:none;color:var(--text-2);
+    cursor:pointer;padding:4px 6px;border-radius:6px;font-size:13px;line-height:1;
+    transition:all .15s var(--ease);
+  }
+  .conversation-item:hover .delete-btn,
+  .conversation-item .delete-btn:focus-visible{opacity:1}
+  .conversation-item .delete-btn:hover{color:var(--danger);background:var(--danger-soft)}
+
+  .sidebar-toggle[aria-expanded="false"]{opacity:.6}
+
+  /* ---------- Mobile: sidebar becomes an off-canvas drawer ---------- */
+  .sidebar-backdrop{
+    display:none;position:fixed;inset:0;z-index:35;
+    background:rgba(5,7,13,.6);
+    opacity:0;pointer-events:none;transition:opacity .2s var(--ease);
+  }
+  @media(max-width:860px){
+    .sidebar{
+      position:fixed;top:0;bottom:0;left:0;z-index:40;width:280px;
+      transform:translateX(-100%);
+      transition:transform .25s var(--ease);
+      box-shadow:var(--shadow-pop);
+    }
+    .sidebar.collapsed{width:280px} /* the desktop "collapsed" state doesn't apply here — visibility is driven by .open instead */
+    .sidebar.open{transform:translateX(0)}
+    .sidebar-backdrop.show{display:block;opacity:1;pointer-events:auto}
+  }
+
   ::-webkit-scrollbar{width:10px}
   ::-webkit-scrollbar-track{background:transparent}
   ::-webkit-scrollbar-thumb{background:rgba(249,250,251,.14);border-radius:8px;border:2px solid transparent;background-clip:padding-box}
@@ -217,6 +293,11 @@
   .theme-dropdown-menu li[aria-selected="true"]::after{
     content:"✓";margin-left:auto;color:var(--emerald);font-weight:700;
   }
+  /* Chat options menu reuses the same dropdown component; flag the
+     destructive action with a danger-tinted hover/focus instead of the
+     neutral one above. */
+  #clearChatOption:hover,
+  #clearChatOption.focused{background:var(--danger-soft);color:var(--danger)}
 
   /* Mode banner */
   .mode-banner{

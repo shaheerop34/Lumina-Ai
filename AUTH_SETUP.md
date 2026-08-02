@@ -79,9 +79,10 @@ in the dashboard, or connect with `mongosh "<your connection string>"`.
 
 - **Sign up / Log in** screen in front of the chat — nobody can use the chat
   (or your AI provider key) without an account.
-- **Cross-device chat history**: your conversation, points, streak, and
-  mode are saved to MongoDB after every exchange and restored on any
-  device you log into (see `api/chat-state.js`).
+- **Cross-device chat history**: every conversation is saved to MongoDB
+  after each exchange and restored on any device you log into (see
+  `api/conversations.js` and `api/conversations/[id].js`); points, streak,
+  and rank are account-level and sync the same way via `api/profile.js`.
 - **Passwords are hashed with bcrypt** (cost factor 12) — the plaintext
   password is never stored anywhere, not even briefly in a log.
 - **Sessions are opaque random tokens**, not JWTs. The browser only ever
