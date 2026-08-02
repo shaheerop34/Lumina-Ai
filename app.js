@@ -58,7 +58,7 @@ Format for Scoreboard Update (append to the END of every message, exactly this s
 *   **Points Earned This Turn:** +[X] ([Reason])
 *   **Next Milestone:** [X] points remaining until you unlock [Reward/Rank, e.g., "IELTS Warrior" or "Band 9 Master"]
 
-Note: do NOT invent or state a specific "Current Streak" day count — the app tracks the user's real daily streak itself from login activity and displays it in the header. Never contradict that number.
+Note: NEVER output a "Current Streak" line or any specific streak day count, under any circumstances, even if earlier messages in this conversation contain one — the app tracks the user's real daily streak itself from login activity and displays it in the header, and any number you guess will be wrong and confuse the user.
 
 ## 3. Interaction Pillars & Behavior
 
@@ -111,7 +111,6 @@ To kick things off: **Are you preparing for the Academic or General Training exa
 ---
 📊 **Your Scoreboard:**
 *   **Points Earned This Turn:** +10 (First Session Check-in)
-*   **Current Streak:** 1 Day
 *   **Next Milestone:** 40 points until you unlock 'IELTS Novice' Rank!`;
 
 const SUGGESTIONS = {
@@ -151,6 +150,7 @@ const sendBtn  = document.getElementById("sendBtn");
 const chip     = document.getElementById("pointsChip");
 const totalEl  = document.getElementById("totalPoints");
 const streakEl = document.getElementById("streakVal");
+const rankEl   = document.getElementById("rankVal");
 const banner   = document.getElementById("modeBanner");
 const sugBox   = document.getElementById("suggestions");
 const btnCoach = document.getElementById("modeCoach");
@@ -372,18 +372,35 @@ function stopSpeaking(){
 }
 
 function sanitizeForSpeech(rawText){
-  // Strip markdown/emoji clutter so the read-aloud version sounds natural.
   return rawText
-    .replace(/📊[\s\S]*$/,"")            // drop the scoreboard block
+    .replace(/📊[\s\S]*$/,"")                     // drop the scoreboard block
+    .replace(/^\s*-{3,}\s*$/gm,"")                 // drop markdown "---" divider lines entirely
     .replace(/[*_#>`]/g,"")
     .replace(/🔧\s*Quick Polish:?/gi,"Quick polish. ")
+    // Abbreviations like "e.g." / "i.e." / "etc." end in a period that
+    // isn't a real sentence break — left alone it makes tokenizeForProsody
+    // insert a full-stop-length pause mid-sentence, which is what was
+    // making the pacing feel off. Drop just their trailing dot.
+    .replace(/\b(e\.g|i\.e|etc|vs|approx|Mr|Mrs|Ms|Dr|Jr|Sr)\./gi, "$1")
+    // Em/en dashes and double-hyphens are a parenthetical pause in written
+    // English, NOT a word — left in, some voices literally read them aloud
+    // as "dash" / "dash dash". Convert to a natural comma-level pause instead.
+    .replace(/\s*[—–]\s*/g, ", ")
+    .replace(/\s*--+\s*/g, ", ")
+    // Parenthetical asides: read as comma pauses on both sides rather than
+    // leaving literal "(" ")" characters for the engine to stumble over.
+    .replace(/[()]/g, ", ")
+    .replace(/,(\s*,)+/g, ",")           // collapse doubled-up commas from the replacements above
+    .replace(/,\s*([.!?;:])/g, "$1")     // drop a comma sitting right before another punctuation mark
     .replace(/\s+/g," ")
     .trim();
 }
 
 // Splits text into clauses on . , ! ? ; : (keeping the delimiter attached)
 // and assigns each one a pause (ms before the NEXT clause starts) plus a
-// pitch/rate multiplier based on its own ending mark.
+// pitch/rate multiplier based on its own ending mark. Pauses are kept short
+// on purpose — anything longer compounds noticeably across a reply with
+// many short clauses and starts to feel sluggish rather than natural.
 function tokenizeForProsody(text){
   const BASE_RATE = 1, BASE_PITCH = 1;
   const rawChunks = text.match(/[^.,!?;:]+[.,!?;:]?/g) || [text];
@@ -391,12 +408,12 @@ function tokenizeForProsody(text){
     const trimmed = chunk.trim();
     if(!trimmed) return null;
     const mark = trimmed.slice(-1);
-    let pause = 200, rate = BASE_RATE, pitch = BASE_PITCH;
-    if(mark === ","){ pause = 160; }                                            // short breath
-    else if(mark === ";" || mark === ":"){ pause = 240; }                       // medium breath
-    else if(mark === "."){ pause = 380; }                                       // full stop
-    else if(mark === "!"){ pause = 340; rate = BASE_RATE * 1.06; pitch = BASE_PITCH * 1.10; } // excited
-    else if(mark === "?"){ pause = 400; pitch = BASE_PITCH * 1.14; }            // rising, questioning
+    let pause = 140, rate = BASE_RATE, pitch = BASE_PITCH;
+    if(mark === ","){ pause = 90; }                                             // short breath
+    else if(mark === ";" || mark === ":"){ pause = 140; }                       // medium breath
+    else if(mark === "."){ pause = 230; }                                       // full stop
+    else if(mark === "!"){ pause = 230; rate = BASE_RATE * 1.05; pitch = BASE_PITCH * 1.08; } // excited
+    else if(mark === "?"){ pause = 250; pitch = BASE_PITCH * 1.12; }            // rising, questioning
     return { text: trimmed, pause, rate, pitch };
   }).filter(Boolean);
 }
@@ -677,16 +694,44 @@ function addMsg(role, html){
   return wrap;
 }
 
+/* ================= RANK (deterministic, derived from real totalPoints) =================
+   Like the streak, rank is computed here from a number the app already
+   trusts (totalPoints) rather than asking the model to name a rank —
+   so it can never drift from what's shown in the header. */
+const RANKS = [
+  { min: 0,    label: "Newcomer" },
+  { min: 40,   label: "IELTS Novice" },
+  { min: 120,  label: "Grammar Apprentice" },
+  { min: 250,  label: "IELTS Warrior" },
+  { min: 500,  label: "Fluency Fighter" },
+  { min: 900,  label: "Band 8 Achiever" },
+  { min: 1500, label: "Band 9 Master" },
+];
+function currentRank(points){
+  let rank = RANKS[0];
+  for(const r of RANKS){ if(points >= r.min) rank = r; else break; }
+  return rank;
+}
+function refreshRankUI(){
+  rankEl.textContent = currentRank(totalPoints).label;
+}
+
 function updatePointsFrom(text){
   const pm = text.match(/Points Earned This Turn:?\**\s*\+?(\d+)/i);
   if(pm){
+    const rankBefore = currentRank(totalPoints).label;
     totalPoints += parseInt(pm[1],10);
     totalEl.textContent = totalPoints;
     store.set("lumina_points", String(totalPoints));
     chip.classList.remove("bump"); void chip.offsetWidth; chip.classList.add("bump");
+    refreshRankUI();
+    const rankAfter = currentRank(totalPoints).label;
+    if(rankAfter !== rankBefore){
+      addSystemNote(`🎉 <b>Rank up!</b> You're now ranked <b>${rankAfter}</b>.`);
+    }
   }
   // Streak is NOT parsed from the model's reply — it's real, calendar-based
-  // daily-activity tracking computed by refreshDailyStreak() below, so it
+  // daily-activity tracking computed by computeDailyStreak() below, so it
   // can't drift from whatever number the LLM happens to hallucinate.
 }
 
@@ -702,19 +747,26 @@ function daysBetween(fromStr, toStr){
   const b = new Date(toStr + "T00:00:00");
   return Math.round((b - a) / 86400000);
 }
-function refreshDailyStreak(){
+// Returns { broke, gapDays } so the caller can decide WHEN to surface the
+// "streak broken" notice (e.g. after restored history has rendered),
+// instead of popping it up mid-calculation.
+function computeDailyStreak(){
   const today = todayStr();
+  const gapDays = lastActive ? daysBetween(lastActive, today) : null;
+  let broke = false;
   if(lastActive === today){
     // Already counted today (e.g. reopened the tab) — leave streak as-is.
-  } else if(lastActive && daysBetween(lastActive, today) === 1){
+  } else if(gapDays === 1){
     streak += 1; // came back the very next calendar day
   } else {
+    if(lastActive && streak > 1) broke = true; // there was a real streak running before this gap
     streak = 1; // first-ever visit, or a gap of 2+ days broke the streak
   }
   lastActive = today;
   store.set("lumina_streak", String(streak));
   store.set("lumina_last_active", lastActive);
   streakEl.textContent = streak;
+  return { broke, gapDays };
 }
 
 /* ================= API (via YOUR proxy — no key in the browser) ================= */
@@ -804,7 +856,17 @@ async function send(){
 
   try{
     const raw = await callAPI();
-    const reply = enforceWordLimit(raw, wordLimit); // hard fallback if the model overshot
+    // Hard guarantee (belt-and-suspenders alongside the system-prompt
+    // instruction): the model can still fabricate a "Current Streak: N
+    // Days" line despite being told not to, especially a smaller free-tier
+    // model — strip it outright so the header's real, calendar-based
+    // streak number is never contradicted in the chat itself.
+    const withoutStreakLine = raw
+      .split("\n")
+      .filter(line => !/current\s*streak/i.test(line))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n");
+    const reply = enforceWordLimit(withoutStreakLine, wordLimit); // hard fallback if the model overshot the word limit
     messages.push({ role: "assistant", content: reply });
     loader.querySelector(".bubble").innerHTML = renderBotContent(reply);
     if(mode === "coach") updatePointsFrom(reply);
@@ -849,20 +911,25 @@ async function initChatUI(){
     store.set("lumina_mode", mode);
 
     totalEl.textContent = totalPoints;
+    refreshRankUI();
     applyMode();
-    refreshDailyStreak(); // may bump the streak if today is a new consecutive day
+    const { broke, gapDays } = computeDailyStreak(); // may bump the streak if today is a new consecutive day
 
     messages.forEach(m => {
       if(m.role === "user") addMsg("user", mdToHtml(m.content));
       else addMsg("bot", renderBotContent(m.content));
     });
     addSystemNote("👋 Welcome back — your chat picked up right where you left off.");
+    if(broke){
+      addSystemNote(`💔 <b>Streak broken</b> — you were away for ${gapDays} day${gapDays === 1 ? "" : "s"}, so your daily streak has reset to <b>Day 1</b>. Come back daily to build it back up!`);
+    }
     saveStateToServer();
   } else {
     // First time on this account — show the normal welcome flow.
     totalEl.textContent = totalPoints;
+    refreshRankUI();
     applyMode();
-    refreshDailyStreak();
+    computeDailyStreak(); // always a fresh Day 1 here — no prior lastActive to break
 
     addMsg("bot", renderBotContent(WELCOME));
     messages.push({ role: "user", content: "Hi" });
