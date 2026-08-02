@@ -16,6 +16,13 @@ const CLAUDE_MODEL = "claude-sonnet-4-6";
 const GEMINI_MODEL = "gemini-2.5-flash";
 const GROQ_MODEL = "llama-3.3-70b-versatile";
 
+// Max characters allowed in a single outgoing message. Keeps prompts well
+// under the model's context/token ceiling so requests don't get rejected
+// upstream — checked BEFORE any state changes, so an over-limit prompt
+// never touches busy/messages and the composer text is left untouched
+// for the user to shorten and resend.
+const MAX_PROMPT_CHARS = 8000;
+
 /* -------- System prompt: COACH MODE (full Lumina) -------- */
 const COACH_PROMPT = `
 ## 1. Core Persona & Tone
@@ -23,6 +30,7 @@ const COACH_PROMPT = `
 - Tone: Professional, encouraging, highly constructive, and engaging.
 - Target Audience: IELTS aspirants (Academic and General Training) ranging from beginner to advanced English levels.
 - Primary Mandate: Help users improve their English grammar through natural conversation, answer IELTS-related queries (with a heavy focus on the Writing modules), and manage a gamified progression system to keep them motivated.
+- Reply Style: Keep replies concise and conversational — avoid dense walls of text. Prefer short paragraphs (2-4 sentences) and bullet points over long unbroken blocks. Stay interactive: where natural, end with a short question or prompt that invites the user's next message.
 
 ## 2. Dynamic Point System (Gamification)
 Track and award points dynamically based on user behavior. Every response you generate MUST conclude with a "Scoreboard Update" block.
@@ -38,8 +46,9 @@ Format for Scoreboard Update (append to the END of every message, exactly this s
 ---
 📊 **Your Scoreboard:**
 *   **Points Earned This Turn:** +[X] ([Reason])
-*   **Current Streak:** [X] Days
 *   **Next Milestone:** [X] points remaining until you unlock [Reward/Rank, e.g., "IELTS Warrior" or "Band 9 Master"]
+
+Note: do NOT invent or state a specific "Current Streak" day count — the app tracks the user's real daily streak itself from login activity and displays it in the header. Never contradict that number.
 
 ## 3. Interaction Pillars & Behavior
 
@@ -61,6 +70,10 @@ When the user submits an essay, paragraph, or sentence for IELTS Writing Task 1 
    - Where to Improve: specific alternatives for weak phrasing or repetitive vocabulary.
    - Upgraded Sample: rewrite a short snippet of their text at a Band 8+ level.
 
+Scoring Calibration — score strictly and consistently against the real IELTS Band Descriptors; do not inflate scores to be encouraging:
+- A competent but average paragraph — correct grammar, adequate but plain vocabulary, simple-to-mixed sentence structures, an adequately addressed but not fully developed argument — belongs around Band 6.5-7, NOT Band 8 or 9. Band 9 is reserved for near-flawless, sophisticated writing; do not award it, or Band 8, unless the text actually demonstrates wide, natural grammatical range, precise/idiomatic vocabulary, and fully developed, tightly cohesive arguments.
+- When uncertain between two adjacent bands, choose the LOWER one. Justify the score against the 4 criteria explicitly rather than defaulting to a high number to sound encouraging — encouragement belongs in the "What Went Well" / tone of the feedback, not in an inflated score.
+
 ## 4. Operational Constraints & Edge Cases
 - Language Level Adaptation: Match vocabulary complexity to the user's estimated level.
 - Strict Guardrails: If the user asks about topics completely unrelated to English learning or the IELTS exam, politely pivot back to their preparation goals.
@@ -75,7 +88,7 @@ Casual mode rules:
 - Behave like a normal helpful AI assistant. Answer any topic the user brings up — it does NOT need to relate to IELTS or English learning.
 - Do NOT correct the user's grammar, spelling, or punctuation. Never add a "Quick Polish" section. Ignore their language mistakes completely and just respond to what they mean.
 - Do NOT award points, mention streaks, or include any "Scoreboard Update" block.
-- Keep a warm, conversational, natural tone. Be concise unless depth is asked for.
+- Keep a warm, conversational, natural tone. Be concise unless depth is asked for — short paragraphs and bullets over dense blocks of text.
 - If the user explicitly asks for IELTS help or writing feedback while in this mode, help them normally, but still without points or unsolicited corrections.
 `.trim();
 
@@ -109,6 +122,7 @@ const store = {
 let messages = [];
 let totalPoints = parseInt(store.get("lumina_points") || "0", 10) || 0;
 let streak = parseInt(store.get("lumina_streak") || "1", 10) || 1;
+let lastActive = store.get("lumina_last_active") || ""; // "YYYY-MM-DD" of the last day the streak was counted
 // no apiKey variable needed — the proxy attaches auth server-side
 let mode = store.get("lumina_mode") || "coach";   // "coach" | "casual"
 let busy = false;
@@ -147,7 +161,7 @@ async function saveStateToServer(){
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "same-origin",
-      body: JSON.stringify({ messages, totalPoints, streak, mode })
+      body: JSON.stringify({ messages, totalPoints, streak, mode, lastActive })
     });
   }catch(e){ /* best-effort — localStorage still has a copy */ }
   finally{ syncInFlight = false; }
@@ -324,6 +338,42 @@ speakBtn.onclick = () => {
 };
 if(!synth){ speakBtn.disabled = true; speakBtn.title = "Speech playback isn't supported in this browser"; }
 
+/* ================= BACKGROUND GRADIENT SWITCHER =================
+   Lets the user turn the ambient background glow on/off and pick between
+   a few gradient color presets. Follows the same store.get/store.set +
+   .active class convention as the Speak toggle above. */
+const ambientEl        = document.querySelector(".ambient");
+const gradientToggle   = document.getElementById("gradientToggle");
+const gradientPreset   = document.getElementById("gradientPreset");
+const GRADIENT_PRESET_CLASSES = ["preset-sunset", "preset-ocean", "preset-mono"];
+
+let gradientEnabled = store.get("lumina_gradient_enabled") !== "0"; // on by default
+let gradientTheme   = store.get("lumina_gradient_theme") || "default";
+
+function applyGradientSettings(){
+  ambientEl.classList.toggle("gradient-off", !gradientEnabled);
+  ambientEl.classList.remove(...GRADIENT_PRESET_CLASSES);
+  if(gradientTheme !== "default") ambientEl.classList.add("preset-" + gradientTheme);
+
+  gradientToggle.classList.toggle("active", gradientEnabled);
+  gradientToggle.textContent = gradientEnabled ? "🌈 Gradient: On" : "⬛ Gradient: Off";
+  gradientToggle.setAttribute("aria-pressed", String(gradientEnabled));
+
+  gradientPreset.disabled = !gradientEnabled;
+  gradientPreset.value = gradientTheme;
+}
+gradientToggle.onclick = () => {
+  gradientEnabled = !gradientEnabled;
+  store.set("lumina_gradient_enabled", gradientEnabled ? "1" : "0");
+  applyGradientSettings();
+};
+gradientPreset.onchange = () => {
+  gradientTheme = gradientPreset.value;
+  store.set("lumina_gradient_theme", gradientTheme);
+  applyGradientSettings();
+};
+applyGradientSettings();
+
 /* ================= NOTES UPLOAD ================= =========================
    Lets you attach a plain-text note (.txt/.md/.csv) so Lumina can read it
    as context. Files are read locally with FileReader.readAsText — never
@@ -426,8 +476,36 @@ function updatePointsFrom(text){
     store.set("lumina_points", String(totalPoints));
     chip.classList.remove("bump"); void chip.offsetWidth; chip.classList.add("bump");
   }
-  const sm = text.match(/Current Streak:?\**\s*(\d+)/i);
-  if(sm){ streak = parseInt(sm[1],10); streakEl.textContent = streak; store.set("lumina_streak", String(streak)); }
+  // Streak is NOT parsed from the model's reply — it's real, calendar-based
+  // daily-activity tracking computed by refreshDailyStreak() below, so it
+  // can't drift from whatever number the LLM happens to hallucinate.
+}
+
+/* ================= DAILY STREAK (real, calendar-based) =================
+   Tracks actual consecutive daily logins/visits rather than trusting the
+   LLM's own text. A "day" is the user's local calendar date. */
+function todayStr(){
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+}
+function daysBetween(fromStr, toStr){
+  const a = new Date(fromStr + "T00:00:00");
+  const b = new Date(toStr + "T00:00:00");
+  return Math.round((b - a) / 86400000);
+}
+function refreshDailyStreak(){
+  const today = todayStr();
+  if(lastActive === today){
+    // Already counted today (e.g. reopened the tab) — leave streak as-is.
+  } else if(lastActive && daysBetween(lastActive, today) === 1){
+    streak += 1; // came back the very next calendar day
+  } else {
+    streak = 1; // first-ever visit, or a gap of 2+ days broke the streak
+  }
+  lastActive = today;
+  store.set("lumina_streak", String(streak));
+  store.set("lumina_last_active", lastActive);
+  streakEl.textContent = streak;
 }
 
 /* ================= API (via YOUR proxy — no key in the browser) ================= */
@@ -492,6 +570,13 @@ async function callAPI(){
 async function send(){
   const text = input.value.trim();
   if(!text || busy) return;
+  if(text.length > MAX_PROMPT_CHARS){
+    addSystemNote(
+      `⚠️ <b>Error:</b> Your message is ${text.length.toLocaleString()} characters, which exceeds ` +
+      `the maximum limit of ${MAX_PROMPT_CHARS.toLocaleString()} characters. Please shorten your input and try again.`
+    );
+    return; // no state touched — busy/messages untouched, composer text kept so the user can edit it
+  }
   busy = true; sendBtn.disabled = true;
   input.value = ""; autoGrow();
   sugBox.innerHTML = "";
@@ -544,25 +629,26 @@ async function initChatUI(){
     messages = remote.messages;
     totalPoints = Number.isFinite(remote.totalPoints) ? remote.totalPoints : totalPoints;
     streak = Number.isFinite(remote.streak) ? remote.streak : streak;
+    lastActive = typeof remote.lastActive === "string" && remote.lastActive ? remote.lastActive : lastActive;
     mode = remote.mode === "casual" ? "casual" : "coach";
     store.set("lumina_points", String(totalPoints));
-    store.set("lumina_streak", String(streak));
     store.set("lumina_mode", mode);
 
     totalEl.textContent = totalPoints;
-    streakEl.textContent = streak;
     applyMode();
+    refreshDailyStreak(); // may bump the streak if today is a new consecutive day
 
     messages.forEach(m => {
       if(m.role === "user") addMsg("user", mdToHtml(m.content));
       else addMsg("bot", renderBotContent(m.content));
     });
     addSystemNote("👋 Welcome back — your chat picked up right where you left off.");
+    saveStateToServer();
   } else {
     // First time on this account — show the normal welcome flow.
     totalEl.textContent = totalPoints;
-    streakEl.textContent = streak;
     applyMode();
+    refreshDailyStreak();
 
     addMsg("bot", renderBotContent(WELCOME));
     messages.push({ role: "user", content: "Hi" });
