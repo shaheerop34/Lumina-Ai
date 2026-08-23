@@ -13,7 +13,7 @@
 
 /* ================= CONFIG ================= */
 const CLAUDE_MODEL = "claude-sonnet-4-6";
-const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_MODEL = "gemini-3.5-flash-lite";
 const GROQ_MODEL = "openai/gpt-oss-120b";
 
 // Max characters allowed in a single outgoing message. Keeps prompts well
@@ -1068,7 +1068,7 @@ function computeDailyStreak(){
 /* ================= API (via YOUR proxy — no key in the browser) ================= */
 // Set this to whichever provider you configured an env var for on Vercel:
 // "groq" | "gemini" | "anthropic"
-const PROXY_PROVIDER = "groq";
+const PROXY_PROVIDER = "gemini";
 const PROXY_URL = "/api/chat";
 
 function systemPrompt(){
