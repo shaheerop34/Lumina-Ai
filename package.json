@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Lumina AI — IELTS coach chat app with secure login",
   "dependencies": {
+    "bcryptjs": "^2.4.3",
     "mongodb": "^6.9.0",
-    "bcryptjs": "^2.4.3"
+    "nodemailer": "^9.0.5"
   }
 }

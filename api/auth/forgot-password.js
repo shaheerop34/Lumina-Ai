@@ -1,5 +1,16 @@
+import nodemailer from "nodemailer";
 import { getDb } from "../../lib/db.js";
 import { generateSessionToken, hashToken, isValidEmail } from "../../lib/crypto.js";
+
+let transporter = null;
+function getTransporter() {
+  if (transporter) return transporter;
+  const user = process.env.GMAIL_USER;
+  const pass = process.env.GMAIL_APP_PASSWORD;
+  if (!user || !pass) return null;
+  transporter = nodemailer.createTransport({ service: "gmail", auth: { user, pass } });
+  return transporter;
+}
 
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
 const RESEND_MIN_INTERVAL_MS = 2 * 60 * 1000; // don't re-send within 2 minutes of the last request
@@ -42,17 +53,15 @@ export default async function handler(req, res) {
     const origin = `${proto}://${req.headers.host}`;
     const resetLink = `${origin}/?reset=${rawToken}`;
 
-    const resendKey = process.env.RESEND_API_KEY;
-    if (!resendKey) {
-      console.error("forgot-password: RESEND_API_KEY is not configured, cannot send email.");
+    const mailer = getTransporter();
+    if (!mailer) {
+      console.error("forgot-password: GMAIL_USER/GMAIL_APP_PASSWORD are not configured, cannot send email.");
       return res.status(200).json(GENERIC_OK); // don't leak config errors to the client
     }
 
-    const emailResp = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: "Bearer " + resendKey },
-      body: JSON.stringify({
-        from: process.env.RESEND_FROM || "Lumina AI <onboarding@resend.dev>",
+    try {
+      await mailer.sendMail({
+        from: `"Lumina AI" <${process.env.GMAIL_USER}>`,
         to: normalizedEmail,
         subject: "Reset your Lumina AI password",
         html: `
@@ -60,10 +69,9 @@ export default async function handler(req, res) {
           <p><a href="${resetLink}">Click here to choose a new password</a> (link expires in 1 hour).</p>
           <p>If you didn't request this, you can safely ignore this email.</p>
         `,
-      }),
-    });
-    if (!emailResp.ok) {
-      console.error("forgot-password: Resend API error", emailResp.status, await emailResp.text().catch(() => ""));
+      });
+    } catch (mailErr) {
+      console.error("forgot-password: Gmail send error", mailErr.message);
     }
 
     return res.status(200).json(GENERIC_OK);

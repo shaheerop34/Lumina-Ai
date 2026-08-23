@@ -768,9 +768,10 @@ sidebarBackdrop.onclick = closeSidebar;
 updateSidebarToggleAria(); // correct the initial aria-expanded for whichever viewport loaded first
 
 /* ================= MOBILE HEADER MENU =================
-   Below 640px, the mode switch / points chip / speak toggle / word-limit
-   input / gradient picker collapse out of the header into a dropdown
-   opened via the ⋮ button — see .header-extras in styles.css. */
+   Below 640px, the word-limit input and gradient/theme picker collapse
+   out of the header into a dropdown opened via the ⋮ button — mode,
+   points/streak/rank, and the speak toggle stay directly visible.
+   See .header-extras in styles.css. */
 const headerExtras     = document.getElementById("headerExtras");
 const mobileMenuToggle = document.getElementById("mobileMenuToggle");
 
@@ -784,7 +785,7 @@ mobileMenuToggle.onclick = (e) => {
   headerExtras.classList.toggle("open", nowOpen);
   mobileMenuToggle.setAttribute("aria-expanded", String(nowOpen));
 };
-// Close on an outside click/tap, or after picking a mode/theme option —
+// Close on an outside click/tap, or after picking a theme option —
 // otherwise the panel just sits open over the chat until manually toggled.
 document.addEventListener("click", (e) => {
   if(!headerExtras.classList.contains("open")) return;
@@ -792,7 +793,7 @@ document.addEventListener("click", (e) => {
   closeMobileMenu();
 });
 headerExtras.addEventListener("click", (e) => {
-  if(e.target.closest("#modeCoach, #modeCasual, .theme-dropdown-menu li")) closeMobileMenu();
+  if(e.target.closest(".theme-dropdown-menu li")) closeMobileMenu();
 });
 
 function escapeHtml(s){

@@ -529,9 +529,10 @@
     .icon-btn{width:34px;height:34px;font-size:15px}
 
     /* ---------- Collapsed header on mobile ---------- */
-    /* Everything except the logo, title, menu toggle, and account chip
-       moves into a dropdown panel opened via the ⋮ button, instead of
-       wrapping onto several cramped lines inside the sticky header. */
+    /* Status people expect at a glance — mode, points/streak/rank, and the
+       speak toggle — stay directly in the header at every width. Only the
+       settings-type controls (word limit, gradient/theme) collapse into a
+       dropdown panel opened via the ⋮ button. */
     .mobile-menu-toggle{display:grid}
     .header-extras{
       display:none;
@@ -545,12 +546,8 @@
       padding:14px 16px 16px;
     }
     .header-extras.open{display:flex}
-    .header-extras .mode-switch,
-    .header-extras .points-chip,
-    .header-extras .speak-toggle,
     .header-extras .word-limit-control,
     .header-extras .gradient-control{width:100%;justify-content:center}
-    .header-extras .points-chip .label{display:inline}
     .header-extras .word-limit-control .label{display:inline}
     .header-extras .theme-dropdown-label{display:inline}
     .header-extras .gradient-control{flex-direction:column;gap:10px}
