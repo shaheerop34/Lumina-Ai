@@ -1084,7 +1084,11 @@ async function callViaProxy(){
       model: GROQ_MODEL,
       messages: [{ role: "system", content: systemPrompt() }, ...messages.map(m => ({ role: m.role, content: m.content }))],
       max_tokens: maxTokens,
-      temperature: 0.7
+      temperature: 0.7,
+      // gpt-oss models spend tokens on hidden reasoning before the visible
+      // answer; without this, short replies can get truncated to nothing
+      // before any real content is written.
+      reasoning_effort: "low"
     };
   } else if(PROXY_PROVIDER === "gemini"){
     payload = {
