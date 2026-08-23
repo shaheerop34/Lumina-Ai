@@ -13,39 +13,57 @@
   const tabRegister  = document.getElementById("tabRegister");
   const loginForm    = document.getElementById("loginForm");
   const registerForm = document.getElementById("registerForm");
+  const forgotForm   = document.getElementById("forgotForm");
+  const resetForm    = document.getElementById("resetForm");
   const goRegister   = document.getElementById("goRegister");
   const goLogin      = document.getElementById("goLogin");
+  const goForgot     = document.getElementById("goForgot");
+  const goLoginFromForgot = document.getElementById("goLoginFromForgot");
   const loginSubmit  = document.getElementById("loginSubmit");
   const registerSubmit = document.getElementById("registerSubmit");
+  const forgotSubmit = document.getElementById("forgotSubmit");
+  const resetSubmit  = document.getElementById("resetSubmit");
   const accountChip  = document.getElementById("accountChip");
   const accountEmail = document.getElementById("accountEmail");
   const logoutBtn    = document.getElementById("logoutBtn");
 
+  const authTabs = document.querySelector(".auth-tabs");
+
   let chatStarted = false;
 
   function showError(msg) {
+    authError.classList.remove("auth-success");
     authError.textContent = msg;
     authError.hidden = false;
   }
   function clearError() {
     authError.hidden = true;
     authError.textContent = "";
+    authError.classList.remove("auth-success");
   }
 
   function showTab(which) {
     clearError();
     const login = which === "login";
+    const register = which === "register";
     tabLogin.classList.toggle("active", login);
-    tabRegister.classList.toggle("active", !login);
+    tabRegister.classList.toggle("active", register);
     tabLogin.setAttribute("aria-selected", String(login));
-    tabRegister.setAttribute("aria-selected", String(!login));
+    tabRegister.setAttribute("aria-selected", String(register));
+    // The Log In / Sign Up tab strip only makes sense for those two views —
+    // forgot/reset are single-purpose flows navigated to via links instead.
+    authTabs.hidden = !login && !register;
     loginForm.hidden = !login;
-    registerForm.hidden = login;
+    registerForm.hidden = !register;
+    forgotForm.hidden = which !== "forgot";
+    resetForm.hidden = which !== "reset";
   }
   tabLogin.onclick = () => showTab("login");
   tabRegister.onclick = () => showTab("register");
   goRegister.onclick = () => showTab("register");
   goLogin.onclick = () => showTab("login");
+  goForgot.onclick = () => showTab("forgot");
+  goLoginFromForgot.onclick = () => showTab("login");
 
   function setBusy(btn, busy, label) {
     btn.disabled = busy;
@@ -141,6 +159,66 @@
     }
   });
 
+  forgotForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    clearError();
+    const email = document.getElementById("forgotEmail").value.trim();
+    setBusy(forgotSubmit, true, "Send Reset Link");
+    try {
+      const res = await fetch("/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ email }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Could not send reset link.");
+      forgotForm.querySelector(".auth-hint").textContent =
+        "If that email has an account, a reset link is on its way — check your inbox (and spam folder).";
+      forgotForm.querySelector("label").hidden = true;
+      document.getElementById("forgotEmail").hidden = true;
+      forgotSubmit.hidden = true;
+    } catch (err) {
+      showError(err.message);
+    } finally {
+      setBusy(forgotSubmit, false, "Send Reset Link");
+    }
+  });
+
+  let resetToken = null;
+  resetForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    clearError();
+    const password = document.getElementById("resetPassword").value;
+    const password2 = document.getElementById("resetPassword2").value;
+    if (password.length < 8) {
+      showError("Password must be at least 8 characters.");
+      return;
+    }
+    if (password !== password2) {
+      showError("Passwords don't match.");
+      return;
+    }
+    setBusy(resetSubmit, true, "Set New Password");
+    try {
+      const res = await fetch("/api/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ token: resetToken, newPassword: password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Could not reset password.");
+      showTab("login");
+      showError("Password updated — please log in with your new password.");
+      authError.classList.add("auth-success");
+    } catch (err) {
+      showError(err.message);
+    } finally {
+      setBusy(resetSubmit, false, "Set New Password");
+    }
+  });
+
   logoutBtn.addEventListener("click", async () => {
     logoutBtn.disabled = true;
     try {
@@ -164,5 +242,20 @@
     },
   };
 
-  checkSession();
+  // A password-reset email link lands here as ?reset=<token>. If present,
+  // go straight to the "set new password" form instead of the normal
+  // logged-in/logged-out flow, and strip the token out of the visible URL
+  // so it isn't sitting in browser history once used.
+  const params = new URLSearchParams(window.location.search);
+  const tokenFromUrl = params.get("reset");
+  if (tokenFromUrl) {
+    resetToken = tokenFromUrl;
+    params.delete("reset");
+    const cleanUrl = window.location.pathname + (params.toString() ? "?" + params.toString() : "");
+    window.history.replaceState({}, "", cleanUrl);
+    overlay.classList.add("show");
+    showTab("reset");
+  } else {
+    checkSession();
+  }
 })();

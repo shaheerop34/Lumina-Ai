@@ -35,37 +35,41 @@
     <p>Your IELTS Coach &amp; Writing Mentor</p>
   </div>
   <div class="h-spacer"></div>
-  <div class="mode-switch" role="tablist" aria-label="Chat mode">
-    <button id="modeCoach" class="active" role="tab" aria-selected="true">🎓 Coach</button>
-    <button id="modeCasual" role="tab" aria-selected="false">💬 Casual</button>
-  </div>
-  <div class="points-chip" id="pointsChip" title="Total points, streak, and rank">
-    <span>⭐ <span class="val" id="totalPoints">0</span> <span class="label">pts</span></span>
-    <span class="divider"></span>
-    <span>🔥 <span class="val" id="streakVal">1</span> <span class="label">day streak</span></span>
-    <span class="divider"></span>
-    <span>🏅 <span class="val" id="rankVal">Newcomer</span></span>
-  </div>
-  <button class="speak-toggle" id="speakBtn" aria-pressed="false" title="Have Lumina read replies aloud">🔈 Speak: Off</button>
-  <div class="word-limit-control" id="wordLimitControl" title="Maximum words per AI reply">
-    <span aria-hidden="true">📝</span>
-    <input type="number" id="wordLimitInput" min="30" max="400" step="10" value="150" aria-label="Maximum words per AI reply" />
-    <span class="label">words</span>
-  </div>
-  <div class="gradient-control" id="gradientControl">
-    <button class="speak-toggle" id="gradientToggle" aria-pressed="true" title="Turn the background gradient on or off">🌈 Gradient: On</button>
-    <div class="theme-dropdown" id="themeDropdown">
-      <button type="button" class="theme-dropdown-trigger" id="themeDropdownTrigger"
-              aria-haspopup="listbox" aria-expanded="false" aria-controls="themeDropdownMenu" title="Choose a gradient theme">
-        <span class="theme-swatch" id="themeSwatchCurrent" aria-hidden="true"></span>
-        <span class="theme-dropdown-label" id="themeDropdownLabel">Emerald / Violet</span>
-        <svg class="theme-chevron" width="10" height="6" viewBox="0 0 10 6" aria-hidden="true">
-          <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </button>
-      <ul class="theme-dropdown-menu" id="themeDropdownMenu" role="listbox" aria-label="Gradient themes" tabindex="-1"></ul>
+  <div class="header-extras" id="headerExtras">
+    <div class="mode-switch" role="tablist" aria-label="Chat mode">
+      <button id="modeCoach" class="active" role="tab" aria-selected="true">🎓 Coach</button>
+      <button id="modeCasual" role="tab" aria-selected="false">💬 Casual</button>
+    </div>
+    <div class="points-chip" id="pointsChip" title="Total points, streak, and rank">
+      <span>⭐ <span class="val" id="totalPoints">0</span> <span class="label">pts</span></span>
+      <span class="divider"></span>
+      <span>🔥 <span class="val" id="streakVal">1</span> <span class="label">day streak</span></span>
+      <span class="divider"></span>
+      <span>🏅 <span class="val" id="rankVal">Newcomer</span></span>
+    </div>
+    <button class="speak-toggle" id="speakBtn" aria-pressed="false" title="Have Lumina read replies aloud">🔈 Speak: Off</button>
+    <div class="word-limit-control" id="wordLimitControl" title="Maximum words per AI reply">
+      <span aria-hidden="true">📝</span>
+      <input type="number" id="wordLimitInput" min="30" max="400" step="10" value="150" aria-label="Maximum words per AI reply" />
+      <span class="label">words</span>
+    </div>
+    <div class="gradient-control" id="gradientControl">
+      <button class="speak-toggle" id="gradientToggle" aria-pressed="true" title="Turn the background gradient on or off">🌈 Gradient: On</button>
+      <div class="theme-dropdown" id="themeDropdown">
+        <button type="button" class="theme-dropdown-trigger" id="themeDropdownTrigger"
+                aria-haspopup="listbox" aria-expanded="false" aria-controls="themeDropdownMenu" title="Choose a gradient theme">
+          <span class="theme-swatch" id="themeSwatchCurrent" aria-hidden="true"></span>
+          <span class="theme-dropdown-label" id="themeDropdownLabel">Emerald / Violet</span>
+          <svg class="theme-chevron" width="10" height="6" viewBox="0 0 10 6" aria-hidden="true">
+            <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <ul class="theme-dropdown-menu" id="themeDropdownMenu" role="listbox" aria-label="Gradient themes" tabindex="-1"></ul>
+      </div>
     </div>
   </div>
+  <button class="icon-btn mobile-menu-toggle" id="mobileMenuToggle" type="button"
+          aria-label="More options" aria-controls="headerExtras" aria-expanded="false" title="More options">⋮</button>
   <div class="account-chip" id="accountChip" hidden>
     <span class="who" id="accountEmail"></span>
     <button class="logout-btn" id="logoutBtn" type="button" title="Log out">Log out</button>
@@ -93,8 +97,26 @@
       <input type="email" id="loginEmail" name="email" autocomplete="username" required placeholder="you@example.com" />
       <label for="loginPassword">Password</label>
       <input type="password" id="loginPassword" name="password" autocomplete="current-password" required placeholder="••••••••" />
+      <p class="auth-switch" style="margin:-6px 0 4px"><button type="button" class="link-btn" id="goForgot">Forgot password?</button></p>
       <button type="submit" class="auth-submit" id="loginSubmit">Log In</button>
       <p class="auth-switch">No account yet? <button type="button" class="link-btn" id="goRegister">Sign up</button></p>
+    </form>
+
+    <form id="forgotForm" class="auth-form" autocomplete="on" hidden>
+      <p class="auth-hint">Enter your account email and we'll send you a link to reset your password.</p>
+      <label for="forgotEmail">Email</label>
+      <input type="email" id="forgotEmail" name="email" autocomplete="username" required placeholder="you@example.com" />
+      <button type="submit" class="auth-submit" id="forgotSubmit">Send Reset Link</button>
+      <p class="auth-switch"><button type="button" class="link-btn" id="goLoginFromForgot">Back to log in</button></p>
+    </form>
+
+    <form id="resetForm" class="auth-form" autocomplete="on" hidden>
+      <p class="auth-hint">Choose a new password for your account.</p>
+      <label for="resetPassword">New Password</label>
+      <input type="password" id="resetPassword" name="new-password" autocomplete="new-password" required minlength="8" placeholder="At least 8 characters" />
+      <label for="resetPassword2">Confirm New Password</label>
+      <input type="password" id="resetPassword2" name="confirm-password" autocomplete="new-password" required minlength="8" placeholder="Re-enter your new password" />
+      <button type="submit" class="auth-submit" id="resetSubmit">Set New Password</button>
     </form>
 
     <form id="registerForm" class="auth-form" autocomplete="on" hidden>

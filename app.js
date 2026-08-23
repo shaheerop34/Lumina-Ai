@@ -148,6 +148,9 @@ let wordLimit = clampWordLimit(parseInt(store.get("lumina_word_limit"), 10));
 const thread   = document.getElementById("thread");
 const chatArea = document.getElementById("chatArea");
 const input    = document.getElementById("input");
+// Give people a sense of the API's input ceiling up front, instead of
+// letting them type a long essay and only find out at send time.
+input.placeholder += ` (up to ~${Math.round(MAX_PROMPT_CHARS / 5.5).toLocaleString()} words)`;
 const sendBtn  = document.getElementById("sendBtn");
 const chip     = document.getElementById("pointsChip");
 const totalEl  = document.getElementById("totalPoints");
@@ -763,6 +766,34 @@ function toggleSidebar(){
 sidebarToggleBtn.onclick = toggleSidebar;
 sidebarBackdrop.onclick = closeSidebar;
 updateSidebarToggleAria(); // correct the initial aria-expanded for whichever viewport loaded first
+
+/* ================= MOBILE HEADER MENU =================
+   Below 640px, the mode switch / points chip / speak toggle / word-limit
+   input / gradient picker collapse out of the header into a dropdown
+   opened via the ⋮ button — see .header-extras in styles.css. */
+const headerExtras     = document.getElementById("headerExtras");
+const mobileMenuToggle = document.getElementById("mobileMenuToggle");
+
+function closeMobileMenu(){
+  headerExtras.classList.remove("open");
+  mobileMenuToggle.setAttribute("aria-expanded", "false");
+}
+mobileMenuToggle.onclick = (e) => {
+  e.stopPropagation();
+  const nowOpen = !headerExtras.classList.contains("open");
+  headerExtras.classList.toggle("open", nowOpen);
+  mobileMenuToggle.setAttribute("aria-expanded", String(nowOpen));
+};
+// Close on an outside click/tap, or after picking a mode/theme option —
+// otherwise the panel just sits open over the chat until manually toggled.
+document.addEventListener("click", (e) => {
+  if(!headerExtras.classList.contains("open")) return;
+  if(headerExtras.contains(e.target) || e.target === mobileMenuToggle) return;
+  closeMobileMenu();
+});
+headerExtras.addEventListener("click", (e) => {
+  if(e.target.closest("#modeCoach, #modeCasual, .theme-dropdown-menu li")) closeMobileMenu();
+});
 
 function escapeHtml(s){
   return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");

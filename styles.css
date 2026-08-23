@@ -224,6 +224,12 @@
 
   .gradient-control{display:flex;align-items:center;gap:6px}
 
+  /* The extras wrapper is invisible to layout on desktop — its children
+     stay direct flex items of <header>, exactly as before it existed.
+     The mobile breakpoint below turns it into a real collapsible panel. */
+  .header-extras{display:contents}
+  .mobile-menu-toggle{display:none}
+
   /* ---------- Word limit control ---------- */
   .word-limit-control{
     display:flex;align-items:center;gap:6px;
@@ -521,6 +527,35 @@
     .theme-dropdown-label{display:none}
     .word-limit-control .label{display:none}
     .icon-btn{width:34px;height:34px;font-size:15px}
+
+    /* ---------- Collapsed header on mobile ---------- */
+    /* Everything except the logo, title, menu toggle, and account chip
+       moves into a dropdown panel opened via the ⋮ button, instead of
+       wrapping onto several cramped lines inside the sticky header. */
+    .mobile-menu-toggle{display:grid}
+    .header-extras{
+      display:none;
+      position:absolute;top:100%;left:0;right:0;z-index:21;
+      flex-direction:column;align-items:stretch;gap:10px;
+      background:linear-gradient(180deg, rgba(22,28,46,.98), rgba(22,28,46,.96));
+      backdrop-filter:blur(20px) saturate(140%);
+      -webkit-backdrop-filter:blur(20px) saturate(140%);
+      border-bottom:1px solid var(--border);
+      box-shadow:var(--shadow-pop);
+      padding:14px 16px 16px;
+    }
+    .header-extras.open{display:flex}
+    .header-extras .mode-switch,
+    .header-extras .points-chip,
+    .header-extras .speak-toggle,
+    .header-extras .word-limit-control,
+    .header-extras .gradient-control{width:100%;justify-content:center}
+    .header-extras .points-chip .label{display:inline}
+    .header-extras .word-limit-control .label{display:inline}
+    .header-extras .theme-dropdown-label{display:inline}
+    .header-extras .gradient-control{flex-direction:column;gap:10px}
+    .header-extras .gradient-control .speak-toggle,
+    .header-extras .theme-dropdown-trigger{width:100%;justify-content:center}
   }
   @media (prefers-reduced-motion: reduce){
     *{animation:none !important;transition:none !important}
@@ -592,6 +627,9 @@
     background:var(--danger-soft);border:1px solid rgba(248,113,113,.35);color:var(--danger);
     font-size:12.5px;line-height:1.5;border-radius:10px;padding:10px 12px;margin-bottom:14px;
   }
+  .auth-error.auth-success{
+    background:var(--emerald-soft);border-color:rgb(from var(--emerald) r g b / .35);color:var(--emerald);
+  }
 
   .auth-form{display:flex;flex-direction:column;gap:6px}
   .auth-form label{font-size:12.5px;color:var(--text-2);margin-top:8px;font-weight:600}
@@ -611,6 +649,7 @@
   .auth-submit:hover{filter:brightness(1.08);transform:translateY(-1px)}
   .auth-submit:disabled{opacity:.6;cursor:not-allowed;transform:none}
 
+  .auth-hint{font-size:12.5px;color:var(--text-2);line-height:1.5;margin-bottom:4px}
   .auth-switch{margin-top:14px;font-size:12.5px;color:var(--text-2);text-align:center}
   .link-btn{background:none;border:none;color:var(--emerald);font-weight:600;cursor:pointer;font-size:12.5px;padding:0}
   .link-btn:hover{text-decoration:underline}
