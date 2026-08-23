@@ -56,6 +56,10 @@
       <input type="number" id="wordLimitInput" min="30" max="400" step="10" value="150" aria-label="Maximum words per AI reply" />
       <span class="label">words</span>
     </div>
+    <div class="voice-control" id="voiceControl" title="Choose which voice reads Lumina's replies aloud">
+      <span aria-hidden="true">🗣️</span>
+      <select id="voiceSelect" aria-label="Speech voice"></select>
+    </div>
     <div class="gradient-control" id="gradientControl">
       <button class="speak-toggle" id="gradientToggle" aria-pressed="true" title="Turn the background gradient on or off">🌈 Gradient: On</button>
       <div class="theme-dropdown" id="themeDropdown">
@@ -147,6 +151,7 @@
 <main id="chatArea">
   <div class="thread" id="thread"></div>
   <div class="suggestions" id="suggestions"></div>
+  <div class="drop-overlay" id="dropOverlay" aria-hidden="true">📎 Drop your file here to attach it</div>
 </main>
 
 <footer>

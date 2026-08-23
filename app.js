@@ -168,6 +168,8 @@ const fileInput  = document.getElementById("fileInput");
 const attachChip = document.getElementById("attachChip");
 const attachName = document.getElementById("attachName");
 const attachClear= document.getElementById("attachClear");
+const voiceSelect= document.getElementById("voiceSelect");
+const voiceControl= document.getElementById("voiceControl");
 
 /* ================= ACCOUNT PROFILE SYNC (points/streak, cross-device) =================
    Points, streak, and rank are account-level — the same regardless of
@@ -486,6 +488,59 @@ function stopSpeaking(){
   if(synth) synth.cancel();
 }
 
+// Voice quality varies wildly by OS/browser — most installed voices are the
+// old robotic-sounding offline engine, while a few (Edge's "X Online
+// (Natural)" voices, Chrome's "Google ... Neural", macOS's "Enhanced"/
+// "Premium" voices) use a real neural TTS backend and sound genuinely
+// human. There's no reliable API flag for "is this one good", so voices
+// are ranked by keyword and the least-robotic one is preselected —
+// the person can still override it from the dropdown, and their choice
+// is remembered.
+const VOICE_PREF_KEY = "lumina_voice_uri";
+let selectedVoice = null;
+
+function voiceQualityScore(v){
+  const n = v.name;
+  let score = 0;
+  if(/online\s*\(natural\)|natural/i.test(n)) score += 100;
+  if(/neural/i.test(n)) score += 90;
+  if(/premium|enhanced/i.test(n)) score += 80;
+  if(/female|aria|jenny|michelle|samantha|zoe|ava|emma/i.test(n)) score += 5;
+  if(v.localService) score -= 10; // on-device voices are usually the older, robotic engine
+  return score;
+}
+
+function populateVoiceList(){
+  if(!synth || !voiceSelect) return;
+  const voices = synth.getVoices().filter(v => /^en/i.test(v.lang));
+  if(!voices.length) return;
+  const ranked = [...voices].sort((a,b) => voiceQualityScore(b) - voiceQualityScore(a));
+
+  voiceSelect.innerHTML = "";
+  for(const v of voices){
+    const opt = document.createElement("option");
+    opt.value = v.voiceURI;
+    opt.textContent = `${v.name} (${v.lang})`;
+    voiceSelect.appendChild(opt);
+  }
+
+  const savedURI = store.get(VOICE_PREF_KEY);
+  const match = (savedURI && voices.find(v => v.voiceURI === savedURI)) || ranked[0];
+  selectedVoice = match;
+  voiceSelect.value = match.voiceURI;
+}
+if(synth){
+  populateVoiceList();
+  synth.onvoiceschanged = populateVoiceList; // Chrome loads the voice list asynchronously
+}
+if(voiceSelect){
+  voiceSelect.onchange = () => {
+    const voices = synth.getVoices();
+    selectedVoice = voices.find(v => v.voiceURI === voiceSelect.value) || null;
+    if(selectedVoice) store.set(VOICE_PREF_KEY, selectedVoice.voiceURI);
+  };
+}
+
 function sanitizeForSpeech(rawText){
   return rawText
     .replace(/📊[\s\S]*$/,"")                     // drop the scoreboard block
@@ -563,6 +618,7 @@ function speakText(rawText){
     const utter = new SpeechSynthesisUtterance(text);
     utter.rate = rate;
     utter.pitch = pitch;
+    if(selectedVoice) utter.voice = selectedVoice;
     const advance = () => { if(myGen === speechGeneration) setTimeout(playNext, pause); };
     utter.onend = advance;
     utter.onerror = advance;
@@ -576,7 +632,11 @@ speakBtn.onclick = () => {
   refreshSpeakBtn();
   if(!speakEnabled) stopSpeaking();
 };
-if(!synth){ speakBtn.disabled = true; speakBtn.title = "Speech playback isn't supported in this browser"; }
+if(!synth){
+  speakBtn.disabled = true;
+  speakBtn.title = "Speech playback isn't supported in this browser";
+  if(voiceControl) voiceControl.hidden = true;
+}
 
 /* ================= GLOBAL DYNAMIC THEME ENGINE =================
    Each theme below defines exactly 3 colors: primary/secondary/accent.
@@ -930,15 +990,13 @@ async function handleDeleteConversation(id){
 
 /* ================= NOTES UPLOAD ================= =========================
    Lets you attach a plain-text note (.txt/.md/.csv) so Lumina can read it
-   as context. Files are read locally with FileReader.readAsText — never
+   as context, either via the 📎 button or by dragging the file onto the
+   chat area. Files are read locally with FileReader.readAsText — never
    uploaded anywhere, never parsed as HTML/executed, and never auto-sent:
    the content lands in the composer for you to review before pressing Send. */
 let attachedNote = null; // { name, content }
 
-attachBtn.onclick = () => fileInput.click();
-fileInput.onchange = () => {
-  const file = fileInput.files[0];
-  fileInput.value = "";
+function attachFile(file){
   if(!file) return;
   const okType = /\.(txt|md|markdown|csv)$/i.test(file.name);
   if(!okType){
@@ -961,11 +1019,45 @@ fileInput.onchange = () => {
   };
   reader.onerror = () => addSystemNote("📎 Couldn't read that file — please try again.");
   reader.readAsText(file);
+}
+
+attachBtn.onclick = () => fileInput.click();
+fileInput.onchange = () => {
+  const file = fileInput.files[0];
+  fileInput.value = "";
+  attachFile(file);
 };
 attachClear.onclick = () => {
   attachedNote = null;
   attachChip.classList.remove("show");
 };
+
+// Drag-and-drop: dropping a file anywhere on the chat area attaches it the
+// same way picking it via the 📎 button does. dragenter/dragover must be
+// prevented on every fired event (they repeat continuously while hovering)
+// or the browser's default "open this file" navigation takes over instead.
+let dragDepth = 0; // tracks nested dragenter/dragleave pairs so the overlay doesn't flicker when the cursor crosses a child element
+chatArea.addEventListener("dragenter", (e) => {
+  e.preventDefault();
+  if(!e.dataTransfer || !e.dataTransfer.types.includes("Files")) return;
+  dragDepth++;
+  chatArea.classList.add("drag-over");
+});
+chatArea.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  if(e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+});
+chatArea.addEventListener("dragleave", () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if(dragDepth === 0) chatArea.classList.remove("drag-over");
+});
+chatArea.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  chatArea.classList.remove("drag-over");
+  const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  attachFile(file);
+});
 
 /* ================= RENDERING ================= */
 function mdToHtml(md){
