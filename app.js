@@ -14,7 +14,7 @@
 /* ================= CONFIG ================= */
 const CLAUDE_MODEL = "claude-sonnet-4-6";
 const GEMINI_MODEL = "gemini-2.5-flash";
-const GROQ_MODEL = "llama-3.3-70b-versatile";
+const GROQ_MODEL = "openai/gpt-oss-120b";
 
 // Max characters allowed in a single outgoing message. Keeps prompts well
 // under the model's context/token ceiling so requests don't get rejected
