@@ -1,0 +1,11 @@
+{
+  "name": "lumina-ai",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Lumina AI — IELTS coach chat app with secure login",
+  "dependencies": {
+    "mongodb": "^6.9.0",
+    "bcryptjs": "^2.4.3"
+  }
+}
